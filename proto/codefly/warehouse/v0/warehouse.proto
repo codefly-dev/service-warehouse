@@ -1,0 +1,379 @@
+syntax = "proto3";
+
+// Package codefly.warehouse.v0 is the generic data-warehouse data plane: one
+// uniform API a client speaks, that a single server translates to BigQuery,
+// Snowflake, Redshift, ClickHouse, or DuckDB behind it. No provider is ever
+// named in this API — the client never links a warehouse SDK. The surface is
+// the honest intersection the industry converged on (SQL + Arrow results, the
+// ADBC / BigQuery Storage / Snowflake Arrow model); anything backend-specific
+// lives behind Native().
+package codefly.warehouse.v0;
+
+option go_package = "github.com/codefly-dev/service-warehouse/gen/codefly/warehouse/v0;warehousev0";
+
+// ColumnType is the portable logical type of a column — the honest intersection
+// across the SQL warehouses. Anything a backend can't map lands in UNKNOWN with
+// the exact backend spelling preserved in Column.native_type.
+enum ColumnType {
+  COLUMN_TYPE_UNSPECIFIED = 0;
+  COLUMN_TYPE_BOOL = 1;
+  COLUMN_TYPE_INT64 = 2;
+  COLUMN_TYPE_FLOAT64 = 3;
+  COLUMN_TYPE_NUMERIC = 4;   // fixed-precision decimal
+  COLUMN_TYPE_STRING = 5;
+  COLUMN_TYPE_BYTES = 6;
+  COLUMN_TYPE_DATE = 7;
+  COLUMN_TYPE_TIME = 8;
+  COLUMN_TYPE_TIMESTAMP = 9;    // wall-clock, no zone
+  COLUMN_TYPE_TIMESTAMPTZ = 10; // instant, zoned
+  COLUMN_TYPE_INTERVAL = 11;
+  COLUMN_TYPE_JSON = 12;
+  COLUMN_TYPE_ARRAY = 13;
+  COLUMN_TYPE_STRUCT = 14;
+  COLUMN_TYPE_GEOGRAPHY = 15;
+  COLUMN_TYPE_UNKNOWN = 16;
+}
+
+// Column describes one field of a table or a result set. native_type is the
+// exact backend spelling (e.g. "NUMERIC(38,9)", "LowCardinality(String)") for
+// clients that need it; type is the portable bucket.
+message Column {
+  string name = 1;
+  ColumnType type = 2;
+  bool nullable = 3;
+  string native_type = 4;
+  int32 precision = 5;   // NUMERIC precision (0 = n/a)
+  int32 scale = 6;       // NUMERIC scale (0 = n/a)
+  string description = 7;
+  // For ARRAY the element type; for STRUCT the fields. Empty otherwise.
+  repeated Column fields = 8;
+}
+
+// TableRef names a table within the database the server is bound to. dataset is
+// the namespace: a BigQuery dataset, a Snowflake / Redshift schema, or a
+// ClickHouse database. table is the leaf name.
+message TableRef {
+  string dataset = 1;
+  string table = 2;
+}
+
+// JobState is the lifecycle of an asynchronous unit of work (query, load,
+// unload). Backends without a job model report DONE synchronously.
+enum JobState {
+  JOB_STATE_UNSPECIFIED = 0;
+  JOB_STATE_PENDING = 1;
+  JOB_STATE_RUNNING = 2;
+  JOB_STATE_DONE = 3;
+  JOB_STATE_FAILED = 4;
+  JOB_STATE_CANCELLED = 5;
+}
+
+// JobStats is best-effort accounting; a field is 0/absent when the backend does
+// not report it.
+message JobStats {
+  int64 bytes_scanned = 1;
+  int64 bytes_billed = 2;
+  int64 rows_produced = 3;
+  int64 rows_affected = 4;
+  int64 slot_millis = 5;
+  bool cache_hit = 6;
+}
+
+// Job is the handle for an asynchronous operation. For a fast query a backend
+// may return a Job already in DONE and stream results in the same call.
+message Job {
+  string id = 1;
+  JobState state = 2;
+  JobStats stats = 3;
+  // error is empty unless state == FAILED.
+  string error = 4;
+  int64 created_unix_ms = 5;
+  int64 started_unix_ms = 6;
+  int64 ended_unix_ms = 7;
+}
+
+// QueryParam is a named bind parameter. value carries a scalar rendered as text
+// (the server binds it type-safely per backend); type disambiguates.
+message QueryParam {
+  string name = 1;
+  ColumnType type = 2;
+  string value = 3;
+  bool is_null = 4;
+}
+
+message QueryRequest {
+  string sql = 1;
+  // params are bound by name (@name / :name / $name normalized per backend).
+  repeated QueryParam params = 2;
+  // default_dataset resolves unqualified table names; empty uses the backend
+  // default.
+  string default_dataset = 3;
+  // dry_run validates and prices the query without executing it.
+  bool dry_run = 4;
+  // max_bytes_billed caps a scan; 0 means the backend default. Exceeding it
+  // fails with RESOURCE_EXHAUSTED before execution.
+  int64 max_bytes_billed = 5;
+  int64 timeout_ms = 6;
+  // arrow requests Arrow-IPC result batches (the default and only portable
+  // encoding). Reserved for future row-encoding negotiation.
+  bool arrow = 7;
+}
+
+// QueryResponse streams: the first message MUST be the header, every following
+// message carries one Arrow-IPC record batch. A dry_run returns only the
+// header. A DDL/DML query returns a header with an empty schema and no batches.
+message QueryResponse {
+  oneof kind {
+    QueryHeader header = 1;
+    bytes arrow_batch = 2;
+  }
+}
+
+message QueryHeader {
+  Job job = 1;
+  // schema is the portable result schema; arrow_ipc_schema is the same schema
+  // as an Arrow IPC schema message, so a client can feed batches straight to an
+  // Arrow reader without reconstructing it.
+  repeated Column schema = 2;
+  bytes arrow_ipc_schema = 3;
+}
+
+message GetJobRequest {
+  string id = 1;
+}
+
+message CancelJobRequest {
+  string id = 1;
+}
+
+message CancelJobResult {}
+
+message ListDatasetsRequest {
+  string page_token = 1;
+  int32 limit = 2;
+}
+
+message Dataset {
+  string name = 1;
+  string location = 2;
+  string description = 3;
+  map<string, string> labels = 4;
+}
+
+message ListDatasetsResult {
+  repeated Dataset datasets = 1;
+  string next_page_token = 2;
+}
+
+message ListTablesRequest {
+  string dataset = 1;
+  string page_token = 2;
+  int32 limit = 3;
+}
+
+// TableKind distinguishes a physical table from a view / materialized view /
+// external table — a client introspects before it mutates.
+enum TableKind {
+  TABLE_KIND_UNSPECIFIED = 0;
+  TABLE_KIND_TABLE = 1;
+  TABLE_KIND_VIEW = 2;
+  TABLE_KIND_MATERIALIZED_VIEW = 3;
+  TABLE_KIND_EXTERNAL = 4;
+}
+
+message TableInfo {
+  TableRef ref = 1;
+  TableKind kind = 2;
+  int64 num_rows = 3;
+  int64 num_bytes = 4;
+  int64 created_unix_ms = 5;
+  int64 modified_unix_ms = 6;
+}
+
+message ListTablesResult {
+  repeated TableInfo tables = 1;
+  string next_page_token = 2;
+}
+
+message GetTableRequest {
+  TableRef ref = 1;
+}
+
+// TableSchema is a table's full description: identity, columns, and the
+// partition / clustering hints that matter for a warehouse.
+message TableSchema {
+  TableInfo info = 1;
+  repeated Column columns = 2;
+  // partition_by / cluster_by are advisory column-name lists; empty when the
+  // backend has none or does not report them.
+  repeated string partition_by = 3;
+  repeated string cluster_by = 4;
+}
+
+message CreateDatasetRequest {
+  string name = 1;
+  string location = 2;
+  string description = 3;
+  map<string, string> labels = 4;
+  // if_not_exists makes the create idempotent.
+  bool if_not_exists = 5;
+}
+
+message DropDatasetRequest {
+  string name = 1;
+  // cascade drops contained tables; without it a non-empty dataset fails.
+  bool cascade = 2;
+  bool if_exists = 3;
+}
+
+message DropResult {}
+
+message CreateTableRequest {
+  TableRef ref = 1;
+  repeated Column columns = 2;
+  repeated string partition_by = 3;
+  repeated string cluster_by = 4;
+  bool if_not_exists = 5;
+  // as_select creates the table from a query (CTAS); when set, columns may be
+  // empty and are inferred.
+  string as_select = 6;
+}
+
+message DropTableRequest {
+  TableRef ref = 1;
+  bool if_exists = 2;
+}
+
+// LoadFormat is the on-disk format of the source files a Load reads.
+enum LoadFormat {
+  LOAD_FORMAT_UNSPECIFIED = 0;
+  LOAD_FORMAT_CSV = 1;
+  LOAD_FORMAT_JSON = 2;      // newline-delimited JSON
+  LOAD_FORMAT_PARQUET = 3;
+  LOAD_FORMAT_AVRO = 4;
+  LOAD_FORMAT_ORC = 5;
+}
+
+// WriteDisposition controls how a Load / CTAS resolves against an existing
+// destination.
+enum WriteDisposition {
+  WRITE_DISPOSITION_UNSPECIFIED = 0;
+  WRITE_DISPOSITION_APPEND = 1;    // add rows
+  WRITE_DISPOSITION_TRUNCATE = 2;  // replace all rows
+  WRITE_DISPOSITION_EMPTY = 3;     // fail if the table has rows
+}
+
+message LoadRequest {
+  TableRef dest = 1;
+  // source_uris point at object storage (e.g. s3://…, gs://…). The backend
+  // reads them directly; bytes never transit this gateway.
+  repeated string source_uris = 2;
+  LoadFormat format = 3;
+  WriteDisposition write_disposition = 4;
+  // schema is optional; empty asks the backend to autodetect.
+  repeated Column schema = 5;
+  // options carries backend-tunable knobs (skip_leading_rows, field_delimiter,
+  // …) without widening the portable surface.
+  map<string, string> options = 6;
+}
+
+message UnloadRequest {
+  // source is either a whole table or an arbitrary query.
+  oneof source {
+    TableRef table = 1;
+    string sql = 2;
+  }
+  // dest_uri is an object-storage prefix the backend writes result files to.
+  string dest_uri = 3;
+  LoadFormat format = 4;
+  map<string, string> options = 5;
+}
+
+// InsertRowsRequest streams row-level appends as Arrow: the first message MUST
+// be the header, every following message one Arrow-IPC record batch matching
+// the header schema.
+message InsertRowsRequest {
+  oneof kind {
+    InsertHeader header = 1;
+    bytes arrow_batch = 2;
+  }
+}
+
+message InsertHeader {
+  TableRef table = 1;
+  // arrow_ipc_schema describes the batches that follow; when empty the batches
+  // are self-describing (schema embedded in the first batch).
+  bytes arrow_ipc_schema = 2;
+}
+
+message InsertRowsResult {
+  int64 rows_inserted = 1;
+  repeated RowError errors = 2;
+}
+
+// RowError reports a per-row rejection — streaming insert is not atomic, so
+// partial success is normal and surfaced per offset.
+message RowError {
+  int64 row_index = 1;
+  string error = 2;
+}
+
+message CapabilitiesRequest {}
+
+// BackendCapabilities is the introspection surface: a client asks what this
+// backend honors before it calls, instead of discovering by failure.
+message BackendCapabilities {
+  string backend = 1;
+  bool async_jobs = 2;
+  bool dry_run = 3;
+  bool parameters = 4;
+  bool ddl = 5;
+  bool load = 6;
+  bool unload = 7;
+  bool streaming_insert = 8;
+  bool arrow_results = 9;
+  int64 max_query_bytes = 10;
+  repeated LoadFormat load_formats = 11;
+  repeated string native_verbs = 12;
+}
+
+message NativeRequest {
+  string verb = 1;
+  map<string, string> params = 2;
+}
+
+// NativeResult is the escape hatch for backend-specific verbs (time-travel,
+// clustering ops, warehouse resize, MERGE-specific tuning, …) that the portable
+// surface deliberately excludes.
+message NativeResult {
+  map<string, string> values = 1;
+}
+
+// Warehouse is the generic data plane. Errors are returned as gRPC status codes
+// normalized across backends: NOT_FOUND, ALREADY_EXISTS, FAILED_PRECONDITION
+// (conditional DDL), INVALID_ARGUMENT (bad SQL), UNIMPLEMENTED (unsupported),
+// PERMISSION_DENIED, RESOURCE_EXHAUSTED (quota/bytes-billed), INTERNAL.
+service Warehouse {
+  // Query plane.
+  rpc Query(QueryRequest) returns (stream QueryResponse);
+  rpc GetJob(GetJobRequest) returns (Job);
+  rpc CancelJob(CancelJobRequest) returns (CancelJobResult);
+
+  // Catalog plane.
+  rpc ListDatasets(ListDatasetsRequest) returns (ListDatasetsResult);
+  rpc ListTables(ListTablesRequest) returns (ListTablesResult);
+  rpc GetTable(GetTableRequest) returns (TableSchema);
+  rpc CreateDataset(CreateDatasetRequest) returns (Dataset);
+  rpc DropDataset(DropDatasetRequest) returns (DropResult);
+  rpc CreateTable(CreateTableRequest) returns (TableSchema);
+  rpc DropTable(DropTableRequest) returns (DropResult);
+
+  // Data movement.
+  rpc Load(LoadRequest) returns (Job);
+  rpc Unload(UnloadRequest) returns (Job);
+  rpc InsertRows(stream InsertRowsRequest) returns (InsertRowsResult);
+
+  // Introspection.
+  rpc Capabilities(CapabilitiesRequest) returns (BackendCapabilities);
+  rpc Native(NativeRequest) returns (NativeResult);
+}
