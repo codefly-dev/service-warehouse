@@ -94,6 +94,53 @@ next milestone is `duckdb` (SQL execution + Arrow encoding), which makes the
 | `SWH_MAX_QUERY_BYTES` | `0` | per-query scan cap (0 = backend default) |
 | `SWH_QUERY_TIMEOUT` | `0` | per-query timeout (Go duration; 0 = backend default) |
 
+## Distribution and SBOM evidence
+
+This repository **publishes no container image**. It builds to the
+`service-warehouse` Go binary; nothing here builds, pushes, or deploys an image,
+and the tree carries no Codefly agent manifest and no `Builder` implementation —
+so no `Builder.SBOM` RPC is served and none is claimed.
+
+Under the fleet image-SBOM contract ([`codefly-dev/core` `docs/sbom.md`][sbom],
+released in `v0.3.29`) that is the `NO_IMAGE_REASON_NO_IMAGE` case: a service
+that legitimately ships no image, which is a different thing from an agent whose
+implementation is missing (`UNSUPPORTED`). A source or lockfile inventory never
+counts as image coverage, so the absence of an image is recorded here as a
+status — the Go module's dependency list does not satisfy it.
+
+`TestRepositoryShipsNoImage` in
+[`cmd/service-warehouse/distribution_test.go`](cmd/service-warehouse/distribution_test.go)
+gates that status. It fails when this repository gains a way to **build** an
+image (a Dockerfile, an `agent.codefly.yaml`, a compose file, or a workflow
+running `docker build`/`docker buildx`/`docker/build-push-action`) *or* a way to
+**deploy** one (a Kubernetes manifest, Helm values, or a Kustomize overlay
+naming an image). Both matter: evidence binds to the digest actually built or
+selected for deployment, so an image built elsewhere and deployed from here owes
+coverage just the same.
+
+The gate is scoped to this repository, which is the limit of what it can prove.
+If another repository ever packages this binary into an image, the service ships
+an image that nothing here can see — that case has to be recorded where that
+image is built.
+
+Introducing image distribution means this lands **with** the image rather than
+after it:
+
+- a valid CycloneDX SBOM for each final runtime image — OS packages and
+  installed application dependencies — covering every shipped platform and every
+  service-owned runtime, init, migration, and sidecar image;
+- evidence bound to the immutable digest and platform actually built or
+  deployed, served at image scope through the shared contract
+  (`BuilderWrapper.SBOMImages`) and checked by `sbom.ValidateCoverage`;
+- the SBOM artifact, checksum, image digest, platform, and service identity
+  carried into the build/release report and retrievable with the image;
+- failures reported as failures — a failed scan, a missing image, a stale digest
+  or an omitted platform must never read as complete coverage.
+
+The scanner itself stays in `core`; this repository does not reimplement it.
+
+[sbom]: https://github.com/codefly-dev/core/blob/v0.3.29/docs/sbom.md
+
 ## Develop
 
 ```bash
