@@ -108,10 +108,23 @@ implementation is missing (`UNSUPPORTED`). A source or lockfile inventory never
 counts as image coverage, so the absence of an image is recorded here as a
 status — the Go module's dependency list does not satisfy it.
 
-`TestRepositoryShipsNoImage` in [`internal/distribution/`](internal/distribution)
-gates that status: it fails when a Dockerfile, an `agent.codefly.yaml`, a compose
-file, or a workflow image build appears. Introducing image distribution means
-this lands **with** the image rather than after it:
+`TestRepositoryShipsNoImage` in
+[`cmd/service-warehouse/distribution_test.go`](cmd/service-warehouse/distribution_test.go)
+gates that status. It fails when this repository gains a way to **build** an
+image (a Dockerfile, an `agent.codefly.yaml`, a compose file, or a workflow
+running `docker build`/`docker buildx`/`docker/build-push-action`) *or* a way to
+**deploy** one (a Kubernetes manifest, Helm values, or a Kustomize overlay
+naming an image). Both matter: evidence binds to the digest actually built or
+selected for deployment, so an image built elsewhere and deployed from here owes
+coverage just the same.
+
+The gate is scoped to this repository, which is the limit of what it can prove.
+If another repository ever packages this binary into an image, the service ships
+an image that nothing here can see — that case has to be recorded where that
+image is built.
+
+Introducing image distribution means this lands **with** the image rather than
+after it:
 
 - a valid CycloneDX SBOM for each final runtime image — OS packages and
   installed application dependencies — covering every shipped platform and every
@@ -126,7 +139,7 @@ this lands **with** the image rather than after it:
 
 The scanner itself stays in `core`; this repository does not reimplement it.
 
-[sbom]: https://github.com/codefly-dev/core/blob/main/docs/sbom.md
+[sbom]: https://github.com/codefly-dev/core/blob/v0.3.29/docs/sbom.md
 
 ## Develop
 
@@ -148,6 +161,5 @@ internal/backend/             Backend interface + mem, duckdb (+ cloud backends)
 internal/server/              gRPC Warehouse implementation + proto↔backend mapping
 internal/config/              env configuration
 internal/serr/                normalized error model
-internal/distribution/        no-image status + its release gate
 cmd/service-warehouse/        the server binary
 ```
