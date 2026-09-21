@@ -80,7 +80,9 @@ preferences; each is a rule an agent broke at real cost.
 
 Derived from [`.github/workflows/ci.yml`](.github/workflows/ci.yml): those
 three commands are the whole gate, so a green local run of all three is the
-definition of done. Go toolchain from `go.mod` (1.27.0).
+definition of done. CI pins the Go version as a literal in that workflow
+(`go-version: "1.27.0"`) rather than reading `go.mod`, so bumping `go.mod`
+alone moves your toolchain and not CI's — change both.
 
 ```sh
 go build ./...

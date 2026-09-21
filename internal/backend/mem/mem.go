@@ -18,8 +18,11 @@ import (
 )
 
 func init() {
-	backend.Register("mem", func(_ context.Context, cfg backend.Config) (backend.Backend, error) {
-		return New(cfg), nil
+	backend.Register("mem", backend.Registration{
+		SelfContained: true,
+		Open: func(_ context.Context, cfg backend.Config) (backend.Backend, error) {
+			return New(cfg), nil
+		},
 	})
 }
 
