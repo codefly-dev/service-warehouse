@@ -40,11 +40,17 @@ func FromEnv() (Config, error) {
 			QueryTimeout:    envDuration("SWH_QUERY_TIMEOUT", 0),
 		},
 	}
-	// DuckDB is self-contained; every cloud backend is bound to a database.
-	if cfg.Backend.Kind != "duckdb" && cfg.Backend.Database == "" && cfg.Backend.DSN == "" {
+	// The local backends are self-contained — mem holds its catalog in process
+	// and DuckDB's database is an optional file path — while every cloud backend
+	// is bound to a database.
+	if !selfContained(cfg.Backend.Kind) && cfg.Backend.Database == "" && cfg.Backend.DSN == "" {
 		return Config{}, fmt.Errorf("SWH_DATABASE (or SWH_DSN) is required for backend %q", cfg.Backend.Kind)
 	}
 	return cfg, nil
+}
+
+func selfContained(kind string) bool {
+	return kind == "duckdb" || kind == "mem"
 }
 
 func env(key, def string) string {
