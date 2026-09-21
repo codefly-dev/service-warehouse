@@ -1,0 +1,12 @@
+version: v2
+managed:
+  enabled: false
+plugins:
+  # Resolved from PATH inside the proto companion image, which pins them; on a
+  # host PATH these names resolve to whatever is installed.
+  - local: protoc-gen-go
+    out: ../gen
+    opt: paths=source_relative
+  - local: protoc-gen-go-grpc
+    out: ../gen
+    opt: paths=source_relative
