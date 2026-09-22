@@ -18,8 +18,11 @@ import (
 )
 
 func init() {
-	backend.Register("duckdb", func(_ context.Context, _ backend.Config) (backend.Backend, error) {
-		return nil, serr.New(serr.Unsupported, "duckdb.Open",
-			"duckdb backend not yet implemented — use SWH_BACKEND=mem for the catalog-only local backend")
+	backend.Register("duckdb", backend.Registration{
+		SelfContained: true,
+		Open: func(_ context.Context, _ backend.Config) (backend.Backend, error) {
+			return nil, serr.New(serr.Unsupported, "duckdb.Open",
+				"duckdb backend not yet implemented — use SWH_BACKEND=mem for the catalog-only local backend")
+		},
 	})
 }

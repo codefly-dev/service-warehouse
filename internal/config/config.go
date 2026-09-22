@@ -22,6 +22,28 @@ type Config struct {
 
 // FromEnv resolves configuration from SWH_* environment variables.
 func FromEnv() (Config, error) {
+	port, err := envInt("SWH_PORT", 0)
+	if err != nil {
+		return Config{}, err
+	}
+	maxQueryBytes, err := envInt("SWH_MAX_QUERY_BYTES", 0)
+	if err != nil {
+		return Config{}, err
+	}
+	queryTimeout, err := envDuration("SWH_QUERY_TIMEOUT", 0)
+	if err != nil {
+		return Config{}, err
+	}
+	// A negative limit is not a smaller limit: both fields spend 0 as "use the
+	// backend default", so a negative value would reach the backend as no limit
+	// at all — the opposite of what an operator setting one intends.
+	if maxQueryBytes < 0 {
+		return Config{}, fmt.Errorf("SWH_MAX_QUERY_BYTES: must not be negative, got %d", maxQueryBytes)
+	}
+	if queryTimeout < 0 {
+		return Config{}, fmt.Errorf("SWH_QUERY_TIMEOUT: must not be negative, got %s", queryTimeout)
+	}
+
 	cfg := Config{
 		ListenAddr: env("SWH_LISTEN", ":9465"),
 		Backend: backend.Config{
@@ -31,17 +53,24 @@ func FromEnv() (Config, error) {
 			Location:        os.Getenv("SWH_LOCATION"),
 			DSN:             os.Getenv("SWH_DSN"),
 			Host:            os.Getenv("SWH_HOST"),
-			Port:            int(envInt("SWH_PORT", 0)),
+			Port:            int(port),
 			User:            os.Getenv("SWH_USER"),
 			Password:        os.Getenv("SWH_PASSWORD"),
 			Account:         os.Getenv("SWH_ACCOUNT"),
 			CredentialsFile: os.Getenv("SWH_CREDENTIALS_FILE"),
-			MaxQueryBytes:   envInt("SWH_MAX_QUERY_BYTES", 0),
-			QueryTimeout:    envDuration("SWH_QUERY_TIMEOUT", 0),
+			MaxQueryBytes:   maxQueryBytes,
+			QueryTimeout:    queryTimeout,
 		},
 	}
-	// DuckDB is self-contained; every cloud backend is bound to a database.
-	if cfg.Backend.Kind != "duckdb" && cfg.Backend.Database == "" && cfg.Backend.DSN == "" {
+
+	// Resolve the kind before anything derived from it, so an unimplemented
+	// backend says so instead of first demanding a database for itself.
+	reg, ok := backend.Lookup(cfg.Backend.Kind)
+	if !ok {
+		return Config{}, fmt.Errorf("unknown backend kind %q (registered: %v)",
+			cfg.Backend.Kind, backend.Registered())
+	}
+	if !reg.SelfContained && cfg.Backend.Database == "" && cfg.Backend.DSN == "" {
 		return Config{}, fmt.Errorf("SWH_DATABASE (or SWH_DSN) is required for backend %q", cfg.Backend.Kind)
 	}
 	return cfg, nil
@@ -54,26 +83,32 @@ func env(key, def string) string {
 	return def
 }
 
-func envInt(key string, def int64) int64 {
+// envInt parses key, or returns def when it is unset. A malformed value is an
+// error: silently falling back to def would turn a misspelled limit into no
+// limit, which is the opposite of what setting one asks for.
+func envInt(key string, def int64) (int64, error) {
 	v := os.Getenv(key)
 	if v == "" {
-		return def
+		return def, nil
 	}
 	n, err := strconv.ParseInt(v, 10, 64)
 	if err != nil {
-		return def
+		return 0, fmt.Errorf("%s: %q is not an integer", key, v)
 	}
-	return n
+	return n, nil
 }
 
-func envDuration(key string, def time.Duration) time.Duration {
+// envDuration parses key as a Go duration, or returns def when it is unset. A
+// malformed value is an error for the same reason as envInt — and a unitless
+// number ("90") is malformed, so it can never be read as a silent zero.
+func envDuration(key string, def time.Duration) (time.Duration, error) {
 	v := os.Getenv(key)
 	if v == "" {
-		return def
+		return def, nil
 	}
 	d, err := time.ParseDuration(v)
 	if err != nil {
-		return def
+		return 0, fmt.Errorf("%s: %q is not a duration (want a unit, e.g. \"90s\")", key, v)
 	}
-	return d
+	return d, nil
 }
