@@ -144,18 +144,34 @@ The scanner itself stays in `core`; this repository does not reimplement it.
 ## Develop
 
 ```bash
-# regenerate stubs from proto (requires buf + protoc-gen-go/-grpc)
-buf generate
+# regenerate stubs from proto (requires the codefly CLI + Docker)
+codefly generate proto --proto ./proto --output ./gen
 
 go build ./...
 go vet ./...
 go test ./...            # unit tests (mem backend + bufconn server)
 ```
 
+`buf` is never run on the host. `codefly generate proto` runs it inside the
+versioned proto companion image (`ghcr.io/codefly-dev/proto`), so the plugin
+versions and the `goimports` pass are the image's, fixed by its tag — two
+machines regenerate the same bytes. `proto/buf.gen.yaml` is the config that
+image runs, which is why it sits with the protos rather than at the root.
+
+Running `buf generate` directly would resolve `protoc-gen-go` and
+`protoc-gen-go-grpc` from your `PATH` at whatever versions happen to be
+installed. That drift shows up only as the `// versions:` banner in each
+generated file, so it reads as harmless and is easy to commit by accident.
+`TestGeneratedStubsMatchPinnedGenerators` in
+[`cmd/service-warehouse/generation_test.go`](cmd/service-warehouse/generation_test.go)
+fails when the committed stubs carry a generator version other than the
+companion's — the drift gate, without putting `buf` in CI.
+
 ## Layout
 
 ```
 proto/codefly/warehouse/v0/   the uniform API
+proto/buf.{yaml,gen.yaml}     buf config, read by the proto companion
 gen/                          generated gRPC stubs
 internal/backend/             Backend interface + mem, duckdb (+ cloud backends)
 internal/server/              gRPC Warehouse implementation + proto↔backend mapping
