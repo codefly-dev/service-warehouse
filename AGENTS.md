@@ -91,10 +91,12 @@ go test -race ./...
 ```
 
 Run the server locally against the zero-dependency backend — it needs no
-database, no credential, and no network:
+database, no warehouse credential, and no network. It still refuses an
+unauthenticated listener, so a local run states that choice (or sets
+`SWH_AUTH_TOKEN`):
 
 ```sh
-SWH_BACKEND=mem go run ./cmd/service-warehouse
+SWH_BACKEND=mem SWH_ALLOW_ANONYMOUS=true go run ./cmd/service-warehouse
 ```
 
 The default `SWH_BACKEND=duckdb` refuses to start, by design: the DuckDB

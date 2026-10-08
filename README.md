@@ -93,6 +93,30 @@ next milestone is `duckdb` (SQL execution + Arrow encoding), which makes the
 | `SWH_CREDENTIALS_FILE` | — | BigQuery service-account JSON (else ADC) |
 | `SWH_MAX_QUERY_BYTES` | `0` | per-query scan cap (0 = backend default) |
 | `SWH_QUERY_TIMEOUT` | `0` | per-query timeout (Go duration; 0 = backend default) |
+| `SWH_AUTH_TOKEN` | — | shared secret every caller must present; required unless `SWH_ALLOW_ANONYMOUS=true` |
+| `SWH_ALLOW_ANONYMOUS` | `false` | `true` accepts callers with no token; refused together with `SWH_AUTH_TOKEN` |
+
+## Authentication
+
+The server holds the warehouse credentials and runs SQL against the database it
+is bound to, and the listen address says nothing about who can reach it. So it
+**refuses to start on an unauthenticated listener** unless the operator says
+otherwise: `SWH_AUTH_TOKEN` must be set, or `SWH_ALLOW_ANONYMOUS` must be `true`
+(for a listener confined to a private boundary enforced elsewhere, such as a
+cluster NetworkPolicy or service-mesh mTLS).
+
+With `SWH_AUTH_TOKEN` set, every RPC — unary and streaming, `Capabilities`
+included — must carry the secret as the `x-codefly-token` gRPC metadata header,
+the key the Codefly host already uses to authenticate agent plugins. Anything
+else is rejected with `UNAUTHENTICATED` before it reaches a backend. The token
+is compared in constant time and never logged. The standard gRPC health service
+(`grpc.health.v1.Health`) is the one exemption: a readiness probe carries no
+token. It reports that the process is serving, not that a warehouse is
+reachable.
+
+This is authentication only — whether the caller holds the deployment's token.
+The server still authorizes nothing: which caller may run which statement is
+settled before the request arrives.
 
 ## Distribution and SBOM evidence
 
@@ -175,6 +199,7 @@ proto/buf.{yaml,gen.yaml}     buf config, read by the proto companion
 gen/                          generated gRPC stubs
 internal/backend/             Backend interface + mem, duckdb (+ cloud backends)
 internal/server/              gRPC Warehouse implementation + proto↔backend mapping
+internal/auth/                caller authentication (the x-codefly-token interceptors)
 internal/config/              env configuration
 internal/serr/                normalized error model
 cmd/service-warehouse/        the server binary

@@ -28,16 +28,21 @@ func init() {
 }
 
 // clearEnv blanks every SWH_* variable so a test describes the whole
-// environment rather than inheriting the developer's shell.
+// environment rather than inheriting the developer's shell. The one thing it
+// then sets is a token: resolution refuses an unauthenticated listener, and
+// that is orthogonal to what most tests here assert. The auth tests clear it
+// again to describe their own posture.
 func clearEnv(t *testing.T) {
 	t.Helper()
 	for _, k := range []string{
 		"SWH_LISTEN", "SWH_BACKEND", "SWH_DATABASE", "SWH_DATASET", "SWH_LOCATION",
 		"SWH_DSN", "SWH_HOST", "SWH_PORT", "SWH_USER", "SWH_PASSWORD", "SWH_ACCOUNT",
 		"SWH_CREDENTIALS_FILE", "SWH_MAX_QUERY_BYTES", "SWH_QUERY_TIMEOUT",
+		"SWH_AUTH_TOKEN", "SWH_ALLOW_ANONYMOUS",
 	} {
 		t.Setenv(k, "")
 	}
+	t.Setenv("SWH_AUTH_TOKEN", "a-per-run-secret")
 }
 
 func TestSelfContainedBackendsNeedNoDatabase(t *testing.T) {
@@ -137,4 +142,90 @@ func TestUnsetLimitsFallBackToDefaults(t *testing.T) {
 	require.Zero(t, cfg.Backend.MaxQueryBytes)
 	require.Zero(t, cfg.Backend.QueryTimeout)
 	require.Zero(t, cfg.Backend.Port)
+}
+
+// TestFromEnvRefusesAnUnauthenticatedListener is the startup guard: with
+// neither a token nor an explicit opt-out the server does not resolve, and the
+// message names both ways out and the header a client must send.
+func TestFromEnvRefusesAnUnauthenticatedListener(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("SWH_AUTH_TOKEN", "")
+
+	_, err := FromEnv()
+	require.Error(t, err)
+	for _, want := range []string{"SWH_AUTH_TOKEN", "x-codefly-token", "SWH_ALLOW_ANONYMOUS"} {
+		require.ErrorContains(t, err, want)
+	}
+}
+
+// A whitespace-only token is not a token: it would install interceptors nobody
+// can satisfy, or be taken for a configured credential while naming nothing.
+func TestFromEnvTreatsABlankTokenAsAbsent(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("SWH_AUTH_TOKEN", "   \n")
+
+	_, err := FromEnv()
+	require.ErrorContains(t, err, "SWH_AUTH_TOKEN is required")
+}
+
+// A secret delivered through a file or a block scalar carries a trailing
+// newline. The enforced token must be what a client can actually send, or every
+// caller is refused while the server logs that auth is on.
+func TestFromEnvTrimsTheToken(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("SWH_AUTH_TOKEN", "s3cr3t\n")
+
+	cfg, err := FromEnv()
+	require.NoError(t, err)
+	require.Equal(t, "s3cr3t", cfg.AuthToken)
+}
+
+// A token together with the anonymous opt-out is the shape of a half-finished
+// migration; picking either silently leaves the operator believing the other.
+func TestFromEnvRejectsATokenWithTheAnonymousOptOut(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("SWH_ALLOW_ANONYMOUS", "true")
+
+	_, err := FromEnv()
+	require.ErrorContains(t, err, "mutually exclusive")
+}
+
+func TestFromEnvAcceptsAnExplicitAnonymousOptOut(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("SWH_AUTH_TOKEN", "")
+	t.Setenv("SWH_ALLOW_ANONYMOUS", "true")
+
+	cfg, err := FromEnv()
+	require.NoError(t, err)
+	require.Empty(t, cfg.AuthToken)
+}
+
+// A misspelled opt-out is an error, not a silent false: the refusal that
+// followed would blame the missing token for a server whose operator did set the
+// opt-out, and send them to provision a secret they chose not to have.
+func TestFromEnvRejectsAMalformedAnonymousOptOut(t *testing.T) {
+	for _, value := range []string{"ture", "yes", "2"} {
+		t.Run(value, func(t *testing.T) {
+			clearEnv(t)
+			t.Setenv("SWH_AUTH_TOKEN", "")
+			t.Setenv("SWH_ALLOW_ANONYMOUS", value)
+
+			_, err := FromEnv()
+			require.ErrorContains(t, err, "SWH_ALLOW_ANONYMOUS")
+			require.ErrorContains(t, err, "not a boolean")
+		})
+	}
+}
+
+// A configuration broken in more than one way reports the backend first: the
+// operator fixing the token should not then meet an error that was there all
+// along.
+func TestFromEnvReportsTheBackendBeforeTheToken(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("SWH_AUTH_TOKEN", "")
+	t.Setenv("SWH_BACKEND", "bigquery")
+
+	_, err := FromEnv()
+	require.ErrorContains(t, err, `unknown backend kind "bigquery"`)
+	require.NotContains(t, err.Error(), "SWH_AUTH_TOKEN")
 }

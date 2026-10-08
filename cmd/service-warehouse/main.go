@@ -15,8 +15,11 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
+	grpchealth "google.golang.org/grpc/health"
+	healthv1 "google.golang.org/grpc/health/grpc_health_v1"
 
 	whv0 "github.com/codefly-dev/service-warehouse/gen/codefly/warehouse/v0"
+	"github.com/codefly-dev/service-warehouse/internal/auth"
 	"github.com/codefly-dev/service-warehouse/internal/backend"
 	"github.com/codefly-dev/service-warehouse/internal/config"
 	"github.com/codefly-dev/service-warehouse/internal/server"
@@ -55,8 +58,7 @@ func run() error {
 		return err
 	}
 
-	grpcServer := grpc.NewServer()
-	whv0.RegisterWarehouseServer(grpcServer, server.New(be))
+	grpcServer := newGRPCServer(be, cfg.AuthToken)
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
@@ -66,9 +68,39 @@ func run() error {
 		gracefulStop(grpcServer, shutdownGrace)
 	}()
 
-	log.Printf("warehouse gateway listening on %s (backend=%s database=%s)",
-		cfg.ListenAddr, cfg.Backend.Kind, cfg.Backend.Database)
+	// Config resolution refuses an empty token unless the operator accepted an
+	// unauthenticated listener, so the empty case here is that choice. The token
+	// itself is never logged.
+	authMode := "none"
+	if cfg.AuthToken != "" {
+		authMode = "token"
+	}
+	log.Printf("warehouse gateway listening on %s (backend=%s database=%s auth=%s)",
+		cfg.ListenAddr, cfg.Backend.Kind, cfg.Backend.Database, authMode)
 	return grpcServer.Serve(lis)
+}
+
+// newGRPCServer assembles the gateway's gRPC server: the Warehouse service over
+// be, the standard health service, and — when token is set — the interceptors
+// that refuse any call that does not present it. The health service is exempt
+// from them (see auth.HealthServicePrefix) so a readiness probe, which carries
+// no token, can still reach it.
+//
+// The health service reports the process as serving and nothing more. It is
+// liveness, not a verdict on the backend: this server does not probe its
+// warehouse, so it claims nothing about whether one is reachable.
+func newGRPCServer(be backend.Backend, token string) *grpc.Server {
+	var options []grpc.ServerOption
+	if token != "" {
+		options = append(options,
+			grpc.ChainUnaryInterceptor(auth.UnaryInterceptor(token)),
+			grpc.ChainStreamInterceptor(auth.StreamInterceptor(token)),
+		)
+	}
+	srv := grpc.NewServer(options...)
+	healthv1.RegisterHealthServer(srv, grpchealth.NewServer())
+	whv0.RegisterWarehouseServer(srv, server.New(be))
+	return srv
 }
 
 // gracefulStop drains in-flight RPCs, but escalates to a hard Stop if they do
