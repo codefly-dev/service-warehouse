@@ -1,0 +1,191 @@
+// Package imageevidence holds the one description of the images this service
+// ships: the platforms the release pipeline publishes, the subjects that
+// describe them, and the CycloneDX documents inventorying them.
+//
+// The agent's Builder.SBOM, the release command (cmd/image-sbom), and the drift
+// test all read it from here. A second copy of the platform list is how a
+// platform gets added to the pipeline and silently shipped with no evidence, so
+// there is only one.
+//
+// What core exports is imported, not redeclared: the scanner (sbom.Image), the
+// subject derivation for a pushed image (sbom.ExpectedFromImageReference), the
+// scanner source selector and the CycloneDX encoder. Core exports no helper
+// that writes a scanned image's documents to disk or resolves a locally built
+// image's ID, so Collect, WriteIndex and localImageID below are this
+// package's, adapted from codefly-dev/service-object-storage's
+// internal/imageevidence (the same three functions); a fix to one belongs in
+// the other until core grows an exported equivalent.
+package imageevidence
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+
+	"github.com/codefly-dev/core/agents/services/sbom"
+	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+)
+
+// Platforms are the platforms the release pipeline publishes the gateway image
+// for, and therefore the platforms evidence has to cover: a multi-architecture
+// image is not inventoried by scanning one of its children. It is asserted
+// against .github/workflows/publish-gateway-image.yml.
+var Platforms = []string{"linux/amd64", "linux/arm64"}
+
+// Role is the gateway's purpose within the service, carried on every subject.
+const Role = "runtime"
+
+// Subjects describes the images the service ships. A published image is
+// multi-architecture and contributes one subject per shipped platform; core
+// derives them from the digest-pinned reference, which is what binds each scan
+// to the image that was built and which core refuses to accept as a bare tag. A
+// local image was built and never pushed, so the daemon holds exactly one
+// platform of it and the subject names none: the platform is read back from the
+// image rather than asserted by the caller.
+//
+// A local subject carries the image ID instead, because the daemon resolves
+// whatever reference it is handed to that ID: a pin sitting only in the
+// reference is not the identity such a scan binds evidence to.
+func Subjects(ctx context.Context, service, reference string, local bool) ([]*builderv0.ImageSubject, error) {
+	if !local {
+		return sbom.ExpectedFromImageReference(sbom.PublishedImage{
+			Service:   service,
+			Role:      Role,
+			Reference: reference,
+			Platforms: Platforms,
+		})
+	}
+	id, err := localImageID(ctx, reference)
+	if err != nil {
+		return nil, err
+	}
+	return []*builderv0.ImageSubject{{
+		Reference: reference,
+		Digest:    id,
+		Role:      Role,
+		Service:   service,
+		Source:    builderv0.ImageSourceKind_IMAGE_SOURCE_KIND_DOCKER_DAEMON,
+	}}, nil
+}
+
+// localImageID reports the identity the Docker daemon holds an image under.
+func localImageID(ctx context.Context, reference string) (string, error) {
+	command := exec.CommandContext(ctx, "docker", "image", "inspect", reference, "--format", "{{.Id}}")
+	var stderr strings.Builder
+	command.Stderr = &stderr
+	out, err := command.Output()
+	if err != nil {
+		// An absent image, an absent daemon and an absent docker are different
+		// things to go fix, and only docker's own message tells them apart.
+		return "", fmt.Errorf("resolve local image %s: %w: %s", reference, err, strings.TrimSpace(stderr.String()))
+	}
+	id := strings.TrimSpace(string(out))
+	if !strings.HasPrefix(id, "sha256:") {
+		return "", fmt.Errorf("local image %s reports id %q, which is not a sha256 digest", reference, id)
+	}
+	return id, nil
+}
+
+// Document is one platform's inventory, written to disk and named by the digest
+// it is bound to.
+type Document struct {
+	Reference string
+	Digest    string
+	Platform  string
+	Path      string
+	SHA256    string
+}
+
+// Collect inventories every subject through the shared scanner and writes one
+// CycloneDX document each. The document carries the scanned digest in its own
+// root component, so an exported artifact still names the image it describes
+// rather than relying on the filename to say so.
+//
+// A single failed scan fails the whole call: publishing evidence for some
+// platforms while silently omitting others is the false coverage claim this
+// evidence exists to prevent.
+func Collect(ctx context.Context, dir string, subjects []*builderv0.ImageSubject) ([]Document, error) {
+	if len(subjects) == 0 {
+		return nil, fmt.Errorf("no image subjects to inventory")
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, fmt.Errorf("create evidence directory: %w", err)
+	}
+	documents := make([]Document, 0, len(subjects))
+	for _, subject := range subjects {
+		result, err := sbom.Image(ctx, sbom.ImageRequest{
+			Reference: subject.GetReference(),
+			Platform:  subject.GetPlatform(),
+			Source:    sbom.SourceOf(subject),
+		})
+		if err != nil {
+			return nil, fmt.Errorf("inventory %s: %w", describe(subject), err)
+		}
+		encoded, err := sbom.MarshalCycloneDXJSON(result.Bom)
+		if err != nil {
+			return nil, fmt.Errorf("encode %s: %w", describe(subject), err)
+		}
+		path := filepath.Join(dir, documentName(subject.GetReference(), result.Platform, result.Digest))
+		if err := os.WriteFile(path, encoded, 0o644); err != nil {
+			return nil, fmt.Errorf("write %s: %w", path, err)
+		}
+		documents = append(documents, Document{
+			Reference: subject.GetReference(),
+			Digest:    result.Digest,
+			Platform:  result.Platform,
+			Path:      path,
+			SHA256:    result.SHA256,
+		})
+	}
+	return documents, nil
+}
+
+// WriteIndex records which image and platform each document covers, so a
+// release asset is readable without opening every document.
+func WriteIndex(dir string, documents []Document) error {
+	var index strings.Builder
+	for _, document := range documents {
+		fmt.Fprintf(&index, "%s %s@%s %s %s\n",
+			document.Platform, referenceName(document.Reference), document.Digest,
+			filepath.Base(document.Path), document.SHA256)
+	}
+	return os.WriteFile(filepath.Join(dir, "index.txt"), []byte(index.String()), 0o644)
+}
+
+// documentName names a document after the repository it inventories, the
+// platform and the digest it is bound to, none of which is typed here.
+func documentName(reference, platform, digest string) string {
+	repository := referenceName(reference)
+	return fmt.Sprintf("%s-%s-%s.cdx.json",
+		repository[strings.LastIndex(repository, "/")+1:],
+		strings.ReplaceAll(platform, "/", "-"),
+		strings.TrimPrefix(digest, "sha256:"))
+}
+
+func describe(subject *builderv0.ImageSubject) string {
+	if platform := subject.GetPlatform(); platform != "" {
+		return subject.GetReference() + " on " + platform
+	}
+	return subject.GetReference()
+}
+
+// referenceName strips any tag or digest so the index names the repository and
+// the digest actually scanned, rather than the tag that was asked for.
+func referenceName(reference string) string {
+	if base, _, found := strings.Cut(reference, "@"); found {
+		reference = base
+	}
+	if slash := strings.LastIndex(reference, "/"); slash >= 0 {
+		if colon := strings.LastIndex(reference[slash:], ":"); colon >= 0 {
+			return reference[:slash+colon]
+		}
+		return reference
+	}
+	if colon := strings.LastIndex(reference, ":"); colon >= 0 {
+		return reference[:colon]
+	}
+	return reference
+}
