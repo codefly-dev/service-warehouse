@@ -1,0 +1,119 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{.Name}}
+  namespace: {{.Namespace}}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: {{.Name}}
+  template:
+    metadata:
+      labels:
+        app: {{.Name}}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: warehouse
+          image: {{ .Image }}
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+            seccompProfile:
+              type: RuntimeDefault
+          ports:
+            - name: grpc
+              containerPort: {{ .Deployment.Parameters.ContainerPort }}
+          env:
+            # The service identity the CLI binds the environment's service
+            # configuration onto: per environment, after this render, it
+            # replaces the SWH_* literals below by name on the container that
+            # declares this (and adds the ones not rendered here).
+            - name: CODEFLY__SERVICE
+              value: "{{ .Name }}"
+            - name: SWH_LISTEN
+              value: ":{{ .Deployment.Parameters.ContainerPort }}"
+{{- if .Deployment.Parameters.Backend }}
+            - name: SWH_BACKEND
+              value: "{{ .Deployment.Parameters.Backend }}"
+{{- end }}
+{{- if .Deployment.Parameters.Database }}
+            - name: SWH_DATABASE
+              value: "{{ .Deployment.Parameters.Database }}"
+{{- end }}
+{{- if .Deployment.Parameters.Dataset }}
+            - name: SWH_DATASET
+              value: "{{ .Deployment.Parameters.Dataset }}"
+{{- end }}
+{{- if .Deployment.Parameters.Location }}
+            - name: SWH_LOCATION
+              value: "{{ .Deployment.Parameters.Location }}"
+{{- end }}
+            # The gateway refuses to start on an unauthenticated listener unless
+            # this is set. In the deployed profile caller identity is enforced by
+            # the cluster — NetworkPolicy plus service-mesh mTLS in front of this
+            # ClusterIP — not by the gateway.
+            #
+            # Do not replace this with SWH_AUTH_TOKEN on its own. The gateway
+            # would then enforce a credential its consumers do not have, because
+            # nothing delivers that secret to their warehouse configuration. Both
+            # halves have to land together; see README "Authentication".
+            - name: SWH_ALLOW_ANONYMOUS
+              value: "true"
+{{- /* No SWH_CREDENTIALS_FILE: nothing here mounts a credentials file, so a path
+would name a file the pod does not have. A deployed cloud warehouse authenticates
+through a workload identity bound to the ServiceAccount below, or through a file
+an overlay outside this agent mounts and patches the variable for; Deploy rejects
+a configured path rather than emit one. Kept as a template comment: rendering it
+as YAML would ship that prose into every manifest. */}}
+{{- if not .Restricted }}
+          envFrom:
+            - secretRef:
+                name: {{.Name}}-secret
+{{- end }}
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          # The gateway's gRPC health service reports that the process is serving
+          # and nothing more: it does not probe the warehouse, so there is no
+          # service to name here that would attest warehouse access, and all
+          # three probes check the overall ("") service. A warehouse outage is
+          # reported per request instead, and does not drain or restart replicas
+          # that share one warehouse and one credential set.
+          #
+          # The grpc probe handler requires Kubernetes >= 1.24 (GA in 1.27); on
+          # older API servers the field is pruned and the Deployment is rejected
+          # for specifying no handler.
+          startupProbe:
+            grpc:
+              port: {{ .Deployment.Parameters.ContainerPort }}
+            periodSeconds: 2
+            failureThreshold: 30
+          readinessProbe:
+            grpc:
+              port: {{ .Deployment.Parameters.ContainerPort }}
+            periodSeconds: 5
+            timeoutSeconds: 3
+          livenessProbe:
+            grpc:
+              port: {{ .Deployment.Parameters.ContainerPort }}
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3

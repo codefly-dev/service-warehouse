@@ -22,6 +22,14 @@ this file needs a fix in the same PR.
 - **Depends on:** the warehouse drivers and the gRPC contract, nothing else.
   The SBOM scanner and the image-SBOM contract live in `codefly-dev/core` and
   are not reimplemented here.
+- **The agent is a second program in this module.** The repo-root `main`
+  package (`main.go`, `runtime.go`, `builder.go`) is the codefly agent that
+  lets a workspace compose the gateway; it links `codefly-dev/core`, and
+  `cmd/service-warehouse` must not. The agent links no backend, so no cgo
+  driver reaches its `CGO_ENABLED=0` release build
+  (`TestAgentLinksNoBackendDriver`). Like the gateway, it authorizes nothing: it
+  starts the gateway, hands out the one token it enforces, and renders the
+  manifest.
 
 Three rules follow from that:
 
@@ -58,8 +66,10 @@ preferences; each is a rule an agent broke at real cost.
    become a fix by working, by being small, by being local, or by the real fix
    belonging to someone else.
 4. **Never hardcode what the system resolves.** `internal/config/config.go` is
-   the entire configuration surface and every knob is an `SWH_*` variable — a
-   listen address, a DSN, a credentials path, a query cap. If you are typing a
+   the entire gateway configuration surface and every knob is an `SWH_*`
+   variable — a listen address, a DSN, a credentials path, a query cap. (The
+   agent has one of its own, `SWH_GATEWAY_IMAGE`, a locally built image to run
+   instead of the pinned one; it never reaches the gateway.) If you are typing a
    connection string, a port, or a credential into Go source, a test, or a
    manifest, you are encoding something true only on your machine for the next
    ten minutes. A test that needs a backend uses `mem`, which needs nothing.
@@ -78,9 +88,9 @@ preferences; each is a rule an agent broke at real cost.
 
 ## Build and test
 
-Derived from [`.github/workflows/ci.yml`](.github/workflows/ci.yml): those
-three commands are the whole gate, so a green local run of all three is the
-definition of done. CI pins the Go version as a literal in that workflow
+Derived from [`.github/workflows/ci.yml`](.github/workflows/ci.yml): the
+`build-test` job is those three commands, so a green local run of all three is
+the definition of done. CI pins the Go version as a literal in that workflow
 (`go-version: "1.27.0"`) rather than reading `go.mod`, so bumping `go.mod`
 alone moves your toolchain and not CI's — change both.
 
@@ -89,6 +99,27 @@ go build ./...
 go vet ./...
 go test -race ./...
 ```
+
+Two more CI jobs need Docker and are not part of that gate. They build the image
+(`docker build -t service-warehouse:e2e .`) and run the agent against it, behind
+the `e2e` build tag:
+
+```sh
+SWH_GATEWAY_IMAGE=service-warehouse:e2e go test -tags e2e -count=1 -run TestRuntimeEndToEnd .
+SWH_GATEWAY_IMAGE=service-warehouse:e2e go test -tags e2e -count=1 -run TestImageSBOM .   # needs syft on PATH
+```
+
+**A green e2e run is not evidence that anything ran.** With
+`SWH_GATEWAY_IMAGE` unset both tests call `t.Skip`, the package still prints
+`ok`, and `go test` exits 0. The SBOM one also skips without `syft`. Read `-v`
+output for `--- PASS`, never `ok` alone.
+
+`codefly agent ci` is the full agent conformance gate. Its workflow
+(`agent-ci.yml`) is `workflow_dispatch` only until a run of it has been seen
+green here. Run locally from the repo root, it needs a CLI whose go
+source-packager carries Go 1.27: with one that carries 1.26.4 the manifest and
+source stages pass and the build stage fails on `go.mod requires go >= 1.27.0`,
+which is the CLI's gap, not this repo's.
 
 Run the server locally against the zero-dependency backend — it needs no
 database, no warehouse credential, and no network. It still refuses an
@@ -113,6 +144,21 @@ version is pinned anywhere in the repo (codefly-dev/service-warehouse#7). If
 `buf generate` leaves you with a diff that is only those banner lines, revert
 it — you changed your toolchain, not the contract.
 
+## Releases
+
+A `v*` tag publishes the gateway image's tags first and the agent binary second,
+from one workflow, in that order. The image itself is published *before* the
+tag, because the agent pins its digest and a digest cannot be recorded in a
+commit the tag was already cut from; `README.md` ("Releasing") has the four
+steps. `gateway-image.json` records no digest until the first image exists, and
+every consumer of it — the agent, `Deploy`, the release — refuses an empty one
+rather than run `:latest`. The tag must match `version:` in `agent.codefly.yaml`
+or the job fails by design.
+
+Core is pinned in two places that move together: the `codefly-dev/core` version
+in `go.mod` and the commit SHA of core's reusable workflows in `release.yml` and
+`agent-ci.yml` (never `@main`: `release.yml` passes `secrets: inherit`).
+
 ## Where the depth is
 
 Keep this file short; depth belongs in the file that owns the subject.
@@ -123,9 +169,10 @@ Keep this file short; depth belongs in the file that owns the subject.
 - `internal/backend/backend.go` — the provider-agnostic interface every
   backend implements, and the portable type model.
 - [`cmd/service-warehouse/distribution_test.go`](cmd/service-warehouse/distribution_test.go)
-  — gates the claim that this repo ships no container image. It fails the day
-  the repo gains a way to build or deploy one; that is the day image SBOM
-  coverage is owed, and the gate is scoped to this repo only.
+  — gates the claim that this repo ships one image, the gateway, and that its
+  SBOM evidence exists. It lists every path that builds or deploys an image and
+  fails on one that is not accounted for, so a second image is the day more
+  image SBOM coverage is owed. The gate is scoped to this repo only.
 - A repeated multi-step procedure belongs in a `.claude/skills/<name>/SKILL.md`
   of its own, or in a nested `AGENTS.md` next to the code it describes —
   not in another paragraph here. There are none yet: this repo has three

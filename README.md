@@ -118,52 +118,111 @@ This is authentication only — whether the caller holds the deployment's token.
 The server still authorizes nothing: which caller may run which statement is
 settled before the request arrives.
 
+## Running as a codefly service
+
+A workspace composes this gateway as `codefly.dev/warehouse`, the same way it
+composes [`service-object-storage`](https://github.com/codefly-dev/service-object-storage)
+as `codefly.dev/object-storage`. The agent is the repo-root `main` package
+([`main.go`](main.go), [`runtime.go`](runtime.go), [`builder.go`](builder.go)),
+declared by [`agent.codefly.yaml`](agent.codefly.yaml); it is released as a GitHub
+release asset a consumer pins by version. The gateway it runs is a container
+image, pinned by digest in [`gateway-image.json`](gateway-image.json).
+
+**What a consumer receives.** The configuration group `warehouse`, with
+`connection` (`grpc://host:port`), `endpoint` (`host:port`) and `token`, a
+secret value to send as the `x-codefly-token` metadata header. The agent mints a
+fresh token for every local run unless an operator pins one, so a run revokes the
+previous run's.
+
+**Locally** (`codefly run`) the agent starts the gateway container, publishes its
+port, waits until the gateway reports itself serving *and* accepts the agent's
+token, and hands the endpoint and token to consumers. That wait attests the
+process and the credential, not the warehouse: the gateway does not probe its
+backend and no RPC reports that. Set `backend:` in `service.codefly.yaml` to
+choose the engine; left unset, the gateway's own default applies, which today is
+`duckdb` and refuses to start, so a local run presently needs `backend: mem`
+(the catalog-only backend). The agent delivers `SWH_BACKEND`, `SWH_DATABASE`,
+`SWH_DATASET` and `SWH_LOCATION`, and refuses `SWH_CREDENTIALS_FILE`, which
+nothing could project into the container. `SWH_GATEWAY_IMAGE` makes the agent
+run a locally built image instead of the pinned one (`docker build -t
+service-warehouse:local .`); it configures the agent, not the gateway.
+
+**Deployed** the agent renders a Deployment, Service and its own ServiceAccount
+(so a cloud warehouse can grant exactly this workload through a workload
+identity), with gRPC health probes on the gateway's overall service. The
+deployed listener is `SWH_ALLOW_ANONYMOUS=true`: caller identity is enforced by
+the cluster (NetworkPolicy and service-mesh mTLS), because nothing delivers a
+secret to the consumers' `warehouse` configuration for a deployment. A configured
+`SWH_AUTH_TOKEN` or `SWH_CREDENTIALS_FILE` is therefore refused rather than
+rendered, and so is a value the manifest cannot carry. The rest of the `SWH_*`
+surface reaches the gateway by the environment's service configuration being
+bound onto the container by name, after the render.
+
 ## Distribution and SBOM evidence
 
-This repository **publishes no container image**. It builds to the
-`service-warehouse` Go binary; nothing here builds, pushes, or deploys an image,
-and the tree carries no Codefly agent manifest and no `Builder` implementation —
-so no `Builder.SBOM` RPC is served and none is claimed.
+This repository publishes **one container image**, the gateway
+(`ghcr.io/codefly-dev/service-warehouse`, for `linux/amd64` and `linux/arm64`),
+and the agent binary that runs it. The service ships no other image: it has no
+init, migration or sidecar image, and the warehouse behind it is not run by this
+service.
 
-Under the fleet image-SBOM contract ([`codefly-dev/core` `docs/sbom.md`][sbom],
-released in `v0.3.29`) that is the `NO_IMAGE_REASON_NO_IMAGE` case: a service
-that legitimately ships no image, which is a different thing from an agent whose
-implementation is missing (`UNSUPPORTED`). A source or lockfile inventory never
-counts as image coverage, so the absence of an image is recorded here as a
-status — the Go module's dependency list does not satisfy it.
+Under the fleet image-SBOM contract ([`codefly-dev/core` `docs/sbom.md`][sbom])
+that image owes evidence, and the agent serves it. `Builder.SBOM` at image scope
+returns one CycloneDX inventory per shipped platform, covering OS packages and
+installed application dependencies, each bound to the image digest and platform
+that was scanned and attributed to the service. The scanner is core's
+(`sbom.Image`, through `BuilderWrapper.SBOMImages`), and the response is checked
+against core's `sbom.ValidateCoverage`.
 
-`TestRepositoryShipsNoImage` in
+- [`internal/imageevidence`](internal/imageevidence/imageevidence.go) holds the
+  one list of shipped platforms and the subjects derived from it; the agent, the
+  release command and the tests all read it.
+- [`cmd/image-sbom`](cmd/image-sbom/main.go) writes the documents. A release runs
+  it against the digest [`gateway-image.json`](gateway-image.json) records and
+  attaches them as the `gateway-image-sbom-<version>` workflow artifact, before
+  the tags consumers resolve are created, so an image whose scan failed is never
+  pullable by the version it was built for.
+- CI builds the image and checks the same contract against it (`image-sbom`), and
+  runs the agent against it (`agent-runtime-e2e`).
+- `ValidationCapabilities.image_sbom` is **served but not advertised**: core
+  holds the advertisement back until every consumer that evaluates it runs a core
+  that can represent the phase, and a present `Validation` is authoritative for
+  every operation it omits. `TestImageSBOMIsServedButNotAdvertised` marks it.
+
+`TestEveryImageThisRepositoryShipsIsCovered` in
 [`cmd/service-warehouse/distribution_test.go`](cmd/service-warehouse/distribution_test.go)
-gates that status. It fails when this repository gains a way to **build** an
-image (a Dockerfile, an `agent.codefly.yaml`, a compose file, or a workflow
-running `docker build`/`docker buildx`/`docker/build-push-action`) *or* a way to
-**deploy** one (a Kubernetes manifest, Helm values, or a Kustomize overlay
-naming an image). Both matter: evidence binds to the digest actually built or
-selected for deployment, so an image built elsewhere and deployed from here owes
-coverage just the same.
+gates this. It lists every path that builds an image (a Dockerfile, an
+`agent.codefly.yaml`, a compose file, a workflow running
+`docker build`/`docker buildx`/`docker/build-push-action`) or deploys one (a
+Kubernetes manifest, Helm values, a Kustomize overlay naming an image), and fails
+on any that is not accounted for, or on one that stopped producing its signal,
+or when the tests holding the evidence are gone. A second image therefore has to
+arrive with its evidence and with an edit to that list.
 
 The gate is scoped to this repository, which is the limit of what it can prove.
 If another repository ever packages this binary into an image, the service ships
-an image that nothing here can see — that case has to be recorded where that
+an image that nothing here can see, and that case has to be recorded where that
 image is built.
 
-Introducing image distribution means this lands **with** the image rather than
-after it:
+### Releasing
 
-- a valid CycloneDX SBOM for each final runtime image — OS packages and
-  installed application dependencies — covering every shipped platform and every
-  service-owned runtime, init, migration, and sidecar image;
-- evidence bound to the immutable digest and platform actually built or
-  deployed, served at image scope through the shared contract
-  (`BuilderWrapper.SBOMImages`) and checked by `sbom.ValidateCoverage`;
-- the SBOM artifact, checksum, image digest, platform, and service identity
-  carried into the build/release report and retrievable with the image;
-- failures reported as failures — a failed scan, a missing image, a stale digest
-  or an omitted platform must never read as complete coverage.
+The digest is only known once the image is built, so the order is fixed, and
+`release.yml` refuses to tag a tree that skips a step:
 
-The scanner itself stays in `core`; this repository does not reimplement it.
+1. Find the upcoming version with `codefly publish --dry-run`.
+2. Run the `publish-gateway-image` workflow with that version (no `v`). It
+   pushes the image by digest, carrying no tag, and prints `gateway-image.json`.
+3. Commit that file in a reviewed change. Until it is committed the lock records
+   no digest, and the agent, the deployment and the release all refuse to name an
+   image.
+4. `codefly publish` tags the release. The tag workflow tests, checks that the
+   tag matches `agent.codefly.yaml`, that the recorded digest was built for this
+   version, inventories it, and only then creates the `:<version>` and `:latest`
+   tags and the GitHub release carrying the agent.
 
-[sbom]: https://github.com/codefly-dev/core/blob/v0.3.29/docs/sbom.md
+The release call needs a `GH_PAT` secret in the repository (`secrets: inherit`).
+
+[sbom]: https://github.com/codefly-dev/core/blob/v0.16.0/docs/sbom.md
 
 ## Develop
 
@@ -173,8 +232,19 @@ codefly generate proto --proto ./proto --output ./gen
 
 go build ./...
 go vet ./...
-go test ./...            # unit tests (mem backend + bufconn server)
+go test -race ./...      # unit tests (mem backend + bufconn server) and the agent's
 ```
+
+The agent's end-to-end tests need Docker and are behind the `e2e` tag; the SBOM
+one also needs `syft` on `PATH`:
+
+```bash
+docker build -t service-warehouse:e2e .
+SWH_GATEWAY_IMAGE=service-warehouse:e2e go test -tags e2e -count=1 .
+```
+
+With `SWH_GATEWAY_IMAGE` unset they skip, and a skipped run still prints `ok`:
+read `-v` for `--- PASS`.
 
 `buf` is never run on the host. `codefly generate proto` runs it inside the
 versioned proto companion image (`ghcr.io/codefly-dev/proto`), so the plugin
@@ -203,4 +273,11 @@ internal/auth/                caller authentication (the x-codefly-token interce
 internal/config/              env configuration
 internal/serr/                normalized error model
 cmd/service-warehouse/        the server binary
+cmd/image-sbom/               writes the image's SBOM evidence (run by the release)
+internal/imageevidence/       the shipped platforms and the SBOM subjects derived from them
+main.go runtime.go builder.go the codefly agent (codefly.dev/warehouse) that runs the gateway
+agent.codefly.yaml            the agent's manifest and version
+gateway-image.json            the gateway image the agent pins, by digest
+Dockerfile                    the gateway image
+templates/                    the agent's README, factory files and Kubernetes manifests
 ```

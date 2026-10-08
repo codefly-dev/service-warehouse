@@ -1,0 +1,12 @@
+# warehouse
+
+The warehouse gateway: a codefly/warehouse/v0 gRPC service in front of a SQL
+warehouse. The backend is selected by configuration: the embedded engine
+locally, a cloud warehouse when deployed.
+
+A local run starts the published gateway image with a fresh shared secret and
+hands it to consumers as the secret `token` value of the `warehouse`
+configuration group. Set `backend` in service.codefly.yaml to choose the engine;
+left unset, the gateway's own default applies. See
+https://github.com/codefly-dev/service-warehouse for the backends that serve
+queries today.

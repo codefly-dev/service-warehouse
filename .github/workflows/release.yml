@@ -1,0 +1,161 @@
+name: release
+
+# Everything a `v*` tag publishes, in dependency order: the tags that resolve
+# the gateway container the agent runs, then the GitHub release carrying the
+# agent binary. The agent pins the gateway digest gateway-image.json records, so
+# a release published without those tags leaves consumers unable to resolve the
+# image by the version they asked for. One workflow, so a failure anywhere stops
+# what follows.
+#
+# The image itself is built and pushed by digest before the tag, by
+# publish-gateway-image.yml: a digest cannot be recorded in a commit the tag has
+# already been cut from.
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+env:
+  # The repository this runs in, never a typed name (see
+  # publish-gateway-image.yml).
+  IMAGE: ghcr.io/${{ github.repository }}
+
+jobs:
+  # A tag whose tests fail publishes nothing. go-service-release.yml gates the
+  # binary on its own test job, but a caller cannot depend on a job inside the
+  # workflow it calls, so the image tags need this gate of their own —
+  # otherwise a failing test still leaves an untested image tagged :latest.
+  # Its own job rather than a step in gateway-image: that job holds packages:
+  # write and an authenticated ghcr session, and the whole test tree has no
+  # business running under a registry-write token.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go test ./...
+
+  gateway-image:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Derive version from tag
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+      # The image tag comes from the git tag, while the agent reports the
+      # version of the embedded agent.codefly.yaml and resolves its gateway by
+      # the digest recorded beside it. A tag ahead of the file publishes one
+      # image and ships an agent that calls itself the previous release, which
+      # exists, so nothing fails at run time and a consumer pinned to one
+      # version runs another.
+      - name: Tag matches the agent version
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          embedded=$(awk '$1 == "version:" {print $2}' agent.codefly.yaml)
+          if [ "$embedded" != "$VERSION" ]; then
+            echo "release tag $VERSION does not match agent.codefly.yaml $embedded" >&2
+            exit 1
+          fi
+      # The recorded digest is the one the agent runs and reports evidence for,
+      # so it has to be an image published for this version and not the one left
+      # over from the previous release — both are digests in the same repository
+      # and neither fails to resolve. publish-gateway-image.yml stamps the
+      # version it built for onto every platform of the image, which is what
+      # tells them apart. A lock that records no digest at all is the tree
+      # before its first image was published: there is nothing to tag, and
+      # `jq -e` alone would let an empty string through.
+      - name: Locked gateway image was published for this version
+        id: locked
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          name=$(jq -er '.name' gateway-image.json)
+          digest=$(jq -er '.digest' gateway-image.json)
+          if [ "$name" != "$IMAGE" ]; then
+            echo "gateway-image.json names $name, but this workflow publishes $IMAGE" >&2
+            exit 1
+          fi
+          if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "gateway-image.json records no sha256 digest (got \"$digest\"): no gateway image has been published;" >&2
+            echo "run publish-gateway-image.yml and commit the digest it prints before tagging" >&2
+            exit 1
+          fi
+          labelled=$(docker buildx imagetools inspect "$name@$digest" --format '{{json .Image}}' |
+            jq -ec '[.. | objects | .Labels? // empty | ."org.opencontainers.image.version"? // empty] | unique')
+          if [ "$labelled" != "$(jq -nc --arg v "$VERSION" '[$v]')" ]; then
+            echo "gateway-image.json records $digest, built for version(s) $labelled, not $VERSION;" >&2
+            echo "run publish-gateway-image.yml and commit the digest it prints before tagging" >&2
+            exit 1
+          fi
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: anchore/sbom-action/download-syft@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+      # Evidence for every platform the image ships, generated by the same code
+      # path the agent's Builder.SBOM uses, so each document is bound to the child
+      # manifest digest inside the document itself. It scans the recorded digest
+      # rather than a tag, so the evidence describes exactly the bytes that are
+      # about to be tagged.
+      - name: image SBOM evidence
+        env:
+          DIGEST: ${{ steps.locked.outputs.digest }}
+        run: go run ./cmd/image-sbom -image "$IMAGE@$DIGEST" -out sbom
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: gateway-image-sbom-${{ steps.version.outputs.version }}
+          path: sbom/
+          if-no-files-found: error
+      # Only now does the image become resolvable by the tags consumers use. A
+      # platform that resolved to no manifest, or a scan that failed, has already
+      # failed the job above, leaving the digest untagged and unreferenced.
+      - name: Publish the release tags
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          DIGEST: ${{ steps.locked.outputs.digest }}
+        run: |
+          set -euo pipefail
+          docker buildx imagetools create \
+            --tag "$IMAGE:$VERSION" \
+            --tag "$IMAGE:latest" \
+            "$IMAGE@$DIGEST"
+          for published in "$IMAGE:$VERSION" "$IMAGE:latest"; do
+            resolved=$(docker buildx imagetools inspect "$published" --format '{{json .Manifest}}' | jq -er '.digest')
+            if [ "$resolved" != "$DIGEST" ]; then
+              echo "$published resolves to $resolved, want $DIGEST" >&2
+              exit 1
+            fi
+          done
+
+  # The binary ships last: only once the image it points at is resolvable and
+  # inventoried is the GitHub release that carries the agent worth creating.
+  release:
+    needs: gateway-image
+    # Pinned to an immutable core commit SHA, not @main: this call carries
+    # secrets: inherit, so a mutable ref would hand an upstream change this
+    # repo's GH_PAT with no commit here. It is core's v0.16.0, the release go.mod
+    # requires; bump the two together. This version of the workflow keeps the
+    # release PAT out of jobs that run unreviewed code and refuses a tag not
+    # reachable from the default branch.
+    uses: codefly-dev/core/.github/workflows/go-service-release.yml@e54bc852f3d40cd1aeafc0ced2369a8c13a51bb8
+    secrets: inherit

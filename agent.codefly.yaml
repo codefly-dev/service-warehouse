@@ -1,0 +1,10 @@
+publisher: codefly.dev
+kind: codefly:service
+name: warehouse
+version: 0.0.1
+source:
+  directory: .
+  agent: codefly.dev/go:0.0.56
+release:
+  owner: workflow
+  workflow: release.yml

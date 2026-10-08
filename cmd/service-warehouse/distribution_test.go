@@ -121,23 +121,93 @@ func contentSignal(path, rel string) (string, error) {
 	return "", nil
 }
 
-// TestRepositoryShipsNoImage is the gate behind the documented no-image status.
-// The moment this repository builds, publishes, or deploys an image, the status
-// is false and image-scope SBOM evidence has to land with the image.
-func TestRepositoryShipsNoImage(t *testing.T) {
+// shippedImage is every path in this repository that builds, publishes, or
+// deploys an image, with what imageSignals says about it. The service ships one
+// image, the gateway, so these are the pieces of that one image: the recipe that
+// builds it, the workflows that build, tag and test it, the manifest of the
+// agent that runs it, and the template that deploys it.
+//
+// A path not listed is an image this repository ships without evidence for it,
+// and a second Dockerfile, a compose file or another workflow building an image
+// lands here first. The list is exact in both directions: a listed path that no
+// longer produces its signal means the image changed shape, and the evidence has
+// to be re-checked against it.
+var shippedImage = []string{
+	".github/workflows/ci.yml: workflow runs docker build",
+	".github/workflows/publish-gateway-image.yml: workflow runs docker/build-push-action",
+	".github/workflows/release.yml: workflow runs docker build",
+	"Dockerfile: container image build definition",
+	"agent.codefly.yaml: Codefly agent manifest, whose Builder ships image build recipes",
+	"templates/deployment/kustomize/base/deployment.yaml.tmpl: manifest names a container image to deploy",
+}
+
+// imageCoverage are the tests, in the agent's package at the repository root,
+// that hold the gateway image's SBOM evidence: one subject per shipped platform,
+// the evidence validated against the shared contract, and the platforms the
+// pipeline builds held to the platforms the evidence covers. They are looked up
+// by name so that deleting one fails here, where the image is accounted for.
+var imageCoverage = []string{
+	"TestImageSubjectsCoverEveryPublishedPlatform",
+	"TestImageEvidenceSatisfiesTheCoverageContract",
+	"TestShippedPlatformsMatchTheReleasePipeline",
+}
+
+// TestEveryImageThisRepositoryShipsIsCovered is the gate behind the documented
+// distribution status. This repository builds, publishes and deploys one
+// container image, the gateway, so image-scope SBOM evidence is owed and is
+// served by the agent's Builder.SBOM (codefly-dev/core docs/sbom.md:
+// BuilderWrapper.SBOMImages, checked by sbom.ValidateCoverage). What this holds
+// is that nothing else joins it without that evidence: any image-producing path
+// outside shippedImage fails, and the tests that hold the evidence have to exist.
+func TestEveryImageThisRepositoryShipsIsCovered(t *testing.T) {
 	found, err := imageSignals(repoRoot)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, signal := range found {
-		t.Errorf("image-producing path found: %s", signal)
+	listed := map[string]bool{}
+	for _, signal := range shippedImage {
+		listed[signal] = true
 	}
-	if len(found) > 0 {
-		t.Log("service-warehouse documents no image, so nothing here publishes image SBOM evidence. " +
-			"Shipping or deploying an image requires a CycloneDX SBOM per final image — OS packages " +
-			"and application dependencies — bound to the digest and platform actually shipped, served " +
-			"through the fleet contract (codefly-dev/core docs/sbom.md: BuilderWrapper.SBOMImages, " +
-			"checked by sbom.ValidateCoverage), then README.md and this gate updated to match.")
+	seen := map[string]bool{}
+	for _, signal := range found {
+		seen[signal] = true
+		if !listed[signal] {
+			t.Errorf("image-producing path not accounted for: %s", signal)
+		}
+	}
+	for _, signal := range shippedImage {
+		if !seen[signal] {
+			t.Errorf("accounted-for image path no longer produces its signal: %s", signal)
+		}
+	}
+	if t.Failed() {
+		t.Log("service-warehouse ships one image, the gateway. A new way to build or deploy an image " +
+			"requires a CycloneDX SBOM per final image — OS packages and application dependencies — bound " +
+			"to the digest and platform actually shipped, served through the fleet contract (codefly-dev/core " +
+			"docs/sbom.md: BuilderWrapper.SBOMImages, checked by sbom.ValidateCoverage), then README.md and " +
+			"this list updated to match.")
+	}
+
+	covered := map[string]bool{}
+	tests, err := filepath.Glob(filepath.Join(repoRoot, "*_test.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range tests {
+		content, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, test := range imageCoverage {
+			if bytes.Contains(content, []byte("func "+test+"(")) {
+				covered[test] = true
+			}
+		}
+	}
+	for _, test := range imageCoverage {
+		if !covered[test] {
+			t.Errorf("the image's SBOM coverage test %s is gone from the agent package", test)
+		}
 	}
 }
 
