@@ -9,8 +9,10 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
+	"github.com/codefly-dev/service-warehouse/internal/auth"
 	"github.com/codefly-dev/service-warehouse/internal/backend"
 )
 
@@ -18,6 +20,12 @@ import (
 type Config struct {
 	ListenAddr string
 	Backend    backend.Config
+	// AuthToken is the shared secret every caller must present as the
+	// auth.MetadataKey metadata header, whitespace-trimmed: a secret delivered
+	// through a file or a block scalar arrives with a trailing newline that no
+	// client would send. Empty means the listener is anonymous, which FromEnv
+	// resolves only when the operator asked for it with SWH_ALLOW_ANONYMOUS.
+	AuthToken string
 }
 
 // FromEnv resolves configuration from SWH_* environment variables.
@@ -61,6 +69,7 @@ func FromEnv() (Config, error) {
 			MaxQueryBytes:   maxQueryBytes,
 			QueryTimeout:    queryTimeout,
 		},
+		AuthToken: strings.TrimSpace(os.Getenv("SWH_AUTH_TOKEN")),
 	}
 
 	// Resolve the kind before anything derived from it, so an unimplemented
@@ -73,7 +82,44 @@ func FromEnv() (Config, error) {
 	if !reg.SelfContained && cfg.Backend.Database == "" && cfg.Backend.DSN == "" {
 		return Config{}, fmt.Errorf("SWH_DATABASE (or SWH_DSN) is required for backend %q", cfg.Backend.Kind)
 	}
+	// Last, so a configuration broken in more than one way reports the backend
+	// first: the token cannot be what stops a server that names no real backend.
+	if err := checkListenerIsAuthenticated(cfg.AuthToken); err != nil {
+		return Config{}, err
+	}
 	return cfg, nil
+}
+
+// checkListenerIsAuthenticated refuses to resolve a configuration that would
+// run SQL against the bound database for anyone who can reach the listen port.
+// The listen address says nothing about who that is, so the token is the only
+// thing this server can enforce itself. This is authentication only: it asks
+// whether the caller holds the deployment's token, never what that caller may
+// do — that is settled before the request arrives.
+func checkListenerIsAuthenticated(token string) error {
+	anonymous, err := envBool("SWH_ALLOW_ANONYMOUS")
+	if err != nil {
+		return err
+	}
+	if token != "" {
+		// Both set is a contradiction, not a preference: "here is a credential"
+		// and "accept callers with no credential" cannot both be the intent, and
+		// silently picking one leaves the operator believing the other. It is
+		// also the shape a half-finished migration takes — a token added to the
+		// secret while the manifest still carries the opt-out.
+		if anonymous {
+			return fmt.Errorf("SWH_AUTH_TOKEN and SWH_ALLOW_ANONYMOUS=true are mutually exclusive: " +
+				"unset SWH_ALLOW_ANONYMOUS to enforce the token, or unset SWH_AUTH_TOKEN to accept anonymous callers")
+		}
+		return nil
+	}
+	if anonymous {
+		return nil
+	}
+	return fmt.Errorf("SWH_AUTH_TOKEN is required: without it every caller that can reach the listener can run SQL against the bound database. "+
+		"Set SWH_AUTH_TOKEN to a shared secret and have clients send it as the %q gRPC metadata header, "+
+		"or set SWH_ALLOW_ANONYMOUS=true if the listener is confined to a private boundary enforced elsewhere (cluster NetworkPolicy / service-mesh mTLS)",
+		auth.MetadataKey)
 }
 
 func env(key, def string) string {
@@ -96,6 +142,21 @@ func envInt(key string, def int64) (int64, error) {
 		return 0, fmt.Errorf("%s: %q is not an integer", key, v)
 	}
 	return n, nil
+}
+
+// envBool parses key as a boolean, or returns false when it is unset. A
+// malformed value is an error for the same reason as envInt: "ture" must not
+// read as the opposite of what the operator typed.
+func envBool(key string) (bool, error) {
+	v := os.Getenv(key)
+	if v == "" {
+		return false, nil
+	}
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		return false, fmt.Errorf("%s: %q is not a boolean (want true or false)", key, v)
+	}
+	return b, nil
 }
 
 // envDuration parses key as a Go duration, or returns def when it is unset. A
