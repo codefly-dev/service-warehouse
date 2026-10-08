@@ -16,13 +16,22 @@ import (
 	_ "github.com/codefly-dev/service-warehouse/internal/backend/mem"
 )
 
-// boundKind registers a backend that is bound to a database, standing in for
-// the cloud backends until one is implemented. Registering a real kind's name
-// would assert a support claim this repository does not make.
-const boundKind = "test-bound"
+// boundKind registers a backend that is bound to a database and can be given a
+// DSN instead, standing in for the cloud backends that are not implemented.
+// Registering a real kind's name would assert a support claim this repository
+// does not make. noDSNKind is the same without a DSN, which is what a project-
+// bound backend such as BigQuery looks like to the configuration.
+const (
+	boundKind = "test-bound"
+	noDSNKind = "test-bound-no-dsn"
+)
 
 func init() {
 	backend.Register(boundKind, backend.Registration{
+		DSN:  true,
+		Open: func(context.Context, backend.Config) (backend.Backend, error) { return nil, nil },
+	})
+	backend.Register(noDSNKind, backend.Registration{
 		Open: func(context.Context, backend.Config) (backend.Backend, error) { return nil, nil },
 	})
 }
@@ -34,7 +43,7 @@ func clearEnv(t *testing.T) {
 	for _, k := range []string{
 		"SWH_LISTEN", "SWH_BACKEND", "SWH_DATABASE", "SWH_DATASET", "SWH_LOCATION",
 		"SWH_DSN", "SWH_HOST", "SWH_PORT", "SWH_USER", "SWH_PASSWORD", "SWH_ACCOUNT",
-		"SWH_CREDENTIALS_FILE", "SWH_MAX_QUERY_BYTES", "SWH_QUERY_TIMEOUT",
+		"SWH_CREDENTIALS_FILE", "SWH_MAX_QUERY_BYTES", "SWH_QUERY_TIMEOUT", "SWH_MAX_ARROW_MESSAGE_BYTES",
 	} {
 		t.Setenv(k, "")
 	}
@@ -63,6 +72,21 @@ func TestBoundBackendRequiresDatabaseOrDSN(t *testing.T) {
 	require.ErrorContains(t, err, boundKind)
 }
 
+// A backend that reads no DSN must not be told to supply one: that sends the
+// operator to set a variable the backend then refuses.
+func TestBackendWithoutDSNAsksForTheDatabaseOnly(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("SWH_BACKEND", noDSNKind)
+
+	_, err := FromEnv()
+	require.ErrorContains(t, err, "SWH_DATABASE")
+	require.NotContains(t, err.Error(), "SWH_DSN")
+
+	t.Setenv("SWH_DSN", "user:pass@account/db")
+	_, err = FromEnv()
+	require.ErrorContains(t, err, "SWH_DATABASE", "a DSN does not stand in for the database of a backend that has none")
+}
+
 func TestBoundBackendAcceptsDSNAlone(t *testing.T) {
 	clearEnv(t)
 	t.Setenv("SWH_BACKEND", boundKind)
@@ -78,10 +102,10 @@ func TestBoundBackendAcceptsDSNAlone(t *testing.T) {
 // backend that does not exist.
 func TestUnknownBackendIsRejectedBeforeItsDatabase(t *testing.T) {
 	clearEnv(t)
-	t.Setenv("SWH_BACKEND", "bigquery")
+	t.Setenv("SWH_BACKEND", "snowflake")
 
 	_, err := FromEnv()
-	require.ErrorContains(t, err, `unknown backend kind "bigquery"`)
+	require.ErrorContains(t, err, `unknown backend kind "snowflake"`)
 	require.ErrorContains(t, err, "mem")
 	require.NotContains(t, err.Error(), "SWH_DATABASE")
 }
@@ -99,6 +123,11 @@ func TestMalformedLimitsAreRejected(t *testing.T) {
 		{"SWH_QUERY_TIMEOUT", "5 minutes", "not a duration"},
 		{"SWH_QUERY_TIMEOUT", "-30s", "must not be negative"},
 		{"SWH_PORT", "abc", "not an integer"},
+		{"SWH_MAX_ARROW_MESSAGE_BYTES", "64MiB", "not an integer"},
+		{"SWH_MAX_ARROW_MESSAGE_BYTES", "-1", "must be positive"},
+		// Zero is refused rather than read as "the default": a zero that reached
+		// the Arrow reader would be no bound at all.
+		{"SWH_MAX_ARROW_MESSAGE_BYTES", "0", "must be positive"},
 	} {
 		t.Run(tc.key+"="+tc.value, func(t *testing.T) {
 			clearEnv(t)
@@ -125,6 +154,16 @@ func TestDefaultsAndParsing(t *testing.T) {
 	require.Equal(t, int64(4096), cfg.Backend.MaxQueryBytes)
 	require.Equal(t, 90*time.Second, cfg.Backend.QueryTimeout)
 	require.Equal(t, 5439, cfg.Backend.Port)
+	require.Equal(t, int64(4<<20), cfg.Backend.MaxArrowMessageBytes, "the Arrow message bound is on by default")
+}
+
+func TestArrowMessageBoundIsConfigurable(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("SWH_MAX_ARROW_MESSAGE_BYTES", "1048576")
+
+	cfg, err := FromEnv()
+	require.NoError(t, err)
+	require.Equal(t, int64(1<<20), cfg.Backend.MaxArrowMessageBytes)
 }
 
 // Unset limits keep meaning "use the backend default"; rejecting malformed

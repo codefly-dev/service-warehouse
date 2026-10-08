@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/codefly-dev/service-warehouse/internal/arrowipc"
 	"github.com/codefly-dev/service-warehouse/internal/backend"
 )
 
@@ -33,6 +34,15 @@ func FromEnv() (Config, error) {
 	queryTimeout, err := envDuration("SWH_QUERY_TIMEOUT", 0)
 	if err != nil {
 		return Config{}, err
+	}
+	// Unlike the two above, this limit has no "0 means the default": a zero that
+	// reached the Arrow reader would be read as no bound, so it is refused here.
+	maxArrowMessageBytes, err := envInt("SWH_MAX_ARROW_MESSAGE_BYTES", arrowipc.DefaultMaxMessageBytes)
+	if err != nil {
+		return Config{}, err
+	}
+	if maxArrowMessageBytes < 1 {
+		return Config{}, fmt.Errorf("SWH_MAX_ARROW_MESSAGE_BYTES: must be positive, got %d", maxArrowMessageBytes)
 	}
 	// A negative limit is not a smaller limit: both fields spend 0 as "use the
 	// backend default", so a negative value would reach the backend as no limit
@@ -60,6 +70,8 @@ func FromEnv() (Config, error) {
 			CredentialsFile: os.Getenv("SWH_CREDENTIALS_FILE"),
 			MaxQueryBytes:   maxQueryBytes,
 			QueryTimeout:    queryTimeout,
+
+			MaxArrowMessageBytes: maxArrowMessageBytes,
 		},
 	}
 
@@ -70,8 +82,12 @@ func FromEnv() (Config, error) {
 		return Config{}, fmt.Errorf("unknown backend kind %q (registered: %v)",
 			cfg.Backend.Kind, backend.Registered())
 	}
-	if !reg.SelfContained && cfg.Backend.Database == "" && cfg.Backend.DSN == "" {
-		return Config{}, fmt.Errorf("SWH_DATABASE (or SWH_DSN) is required for backend %q", cfg.Backend.Kind)
+	if !reg.SelfContained && cfg.Backend.Database == "" && !(reg.DSN && cfg.Backend.DSN != "") {
+		need := "SWH_DATABASE"
+		if reg.DSN {
+			need += " (or SWH_DSN)"
+		}
+		return Config{}, fmt.Errorf("%s is required for backend %q", need, cfg.Backend.Kind)
 	}
 	return cfg, nil
 }
