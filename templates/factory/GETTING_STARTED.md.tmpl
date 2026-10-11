@@ -1,0 +1,12 @@
+# Getting started
+
+This service runs the warehouse gateway with `backend: mem`: the catalog-only
+backend needs no warehouse credentials and does not execute queries. The agent
+generates the caller token locally and delivers it to consumers. Its test step
+checks that the gateway is serving and accepts that token.
+
+Deployment requires an environment-managed Kubernetes secret reference for
+`SWH_AUTH_TOKEN`. Bind the same secret key to every consumer's `warehouse.token`
+configuration. The rendered NetworkPolicy allows only same-namespace ingress;
+a policy-capable CNI is required. Anonymous access is only an explicit opt-in
+when running the gateway directly for local development.

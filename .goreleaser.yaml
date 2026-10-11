@@ -1,0 +1,41 @@
+version: 2
+
+sboms:
+  - id: archives
+    artifacts: archive
+    documents:
+      - "${artifact}.sbom.json"
+    disable: false
+
+project_name: service-warehouse
+
+# The release asset is the codefly agent binary: the main package at the repo
+# root, which is what makes codefly.dev/warehouse resolvable. It is built without
+# cgo and must stay so: the gateway (cmd/service-warehouse) is the binary that
+# carries the warehouse drivers, and ships as the container image the release
+# workflow publishes before this one runs. TestAgentLinksNoBackendDriver holds
+# the drivers out of this package.
+builds:
+  - id: darwin
+    main: .
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+  - id: linux
+    main: .
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - id: default
+    formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"

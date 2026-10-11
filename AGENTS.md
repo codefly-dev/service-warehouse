@@ -19,9 +19,24 @@ this file needs a fix in the same PR.
   tenant, a permission, a product noun, a business rule, or which application
   is asking. The server is bound to one database and authorizes nothing; the
   caller's authority is settled before the request arrives.
-- **Depends on:** the warehouse drivers and the gRPC contract, nothing else.
-  The SBOM scanner and the image-SBOM contract live in `codefly-dev/core` and
-  are not reimplemented here.
+- **Depends on:** the warehouse drivers, the gRPC contract, and core's lightweight
+  `callertoken` package. Caller authentication, image lock parsing, the SBOM
+  scanner and evidence writing live in `codefly-dev/core` and are not copied here.
+- **The agent is a second program in this module.** The repo-root `main`
+  package (`main.go`, `runtime.go`, `builder.go`) is the codefly agent that
+  lets a workspace compose the gateway; it links core's agent runtime, which
+  `cmd/service-warehouse` must not (it uses only core's `callertoken`). The agent
+  links no backend, so no cgo driver reaches its `CGO_ENABLED=0` release build
+  (`TestAgentLinksNoBackendDriver`). Like the gateway, it authorizes nothing: it
+  starts the gateway, hands out the one token it enforces, and renders the
+  manifest.
+
+Deployments require an environment-managed `SWH_AUTH_TOKEN` secret reference;
+consumers bind the same key to `warehouse.token`. Reject caller-supplied
+`SWH_ALLOW_ANONYMOUS` keys from every configuration source, even false/empty
+values; only the template may supply its single literal false. The templates render a
+same-namespace ingress NetworkPolicy. Anonymous access is only an explicit local
+gateway opt-in. README owns the secret binding procedure and policy limits.
 
 Three rules follow from that:
 
@@ -58,8 +73,10 @@ preferences; each is a rule an agent broke at real cost.
    become a fix by working, by being small, by being local, or by the real fix
    belonging to someone else.
 4. **Never hardcode what the system resolves.** `internal/config/config.go` is
-   the entire configuration surface and every knob is an `SWH_*` variable — a
-   listen address, a DSN, a credentials path, a query cap. If you are typing a
+   the entire gateway configuration surface and every knob is an `SWH_*`
+   variable — a listen address, a DSN, a credentials path, a query cap. (The
+   agent has one of its own, `SWH_GATEWAY_IMAGE`, a locally built image to run
+   instead of the pinned one; it never reaches the gateway.) If you are typing a
    connection string, a port, or a credential into Go source, a test, or a
    manifest, you are encoding something true only on your machine for the next
    ten minutes. A test that needs a backend uses `mem`, which needs nothing.
@@ -78,10 +95,10 @@ preferences; each is a rule an agent broke at real cost.
 
 ## Build and test
 
-Derived from [`.github/workflows/ci.yml`](.github/workflows/ci.yml): those
-three commands are the whole gate, so a green local run of all three is the
-definition of done. CI pins the Go version as a literal in that workflow
-(`go-version: "1.27.0"`) rather than reading `go.mod`, so bumping `go.mod`
+Derived from [`.github/workflows/ci.yml`](.github/workflows/ci.yml): the
+`build-test` job is those three commands, so a green local run of all three is
+the definition of done. CI pins the Go version as a literal in that workflow
+(`go-version: "1.27.2"`) rather than reading `go.mod`, so bumping `go.mod`
 alone moves your toolchain and not CI's — change both.
 
 ```sh
@@ -90,11 +107,41 @@ go vet ./...
 go test -race ./...
 ```
 
-Run the server locally against the zero-dependency backend — it needs no
-database, no credential, and no network:
+Two more CI jobs need Docker and are not part of that gate. They build the image
+(`docker build -t service-warehouse:e2e .`) and run the agent against it, behind
+the `e2e` build tag:
 
 ```sh
-SWH_BACKEND=mem go run ./cmd/service-warehouse
+SWH_GATEWAY_IMAGE=service-warehouse:e2e go test -v -tags e2e -count=1 -run TestRuntimeEndToEnd .
+SWH_GATEWAY_IMAGE=service-warehouse:e2e go test -v -tags e2e -count=1 -run TestImageSBOM .   # needs syft on PATH
+```
+
+**A green e2e run is not evidence that anything ran.** With
+`SWH_GATEWAY_IMAGE` unset both tests call `t.Skip`, the package still prints
+`ok`, and `go test` exits 0. The SBOM one also skips without `syft`. Read `-v`
+output for `--- PASS`, never `ok` alone.
+
+`codefly agent ci` is the full agent conformance gate. Its workflow
+(`agent-ci.yml`) is `workflow_dispatch` only until a full run has been seen green
+here. Run `GOTOOLCHAIN=go1.27.2 codefly agent ci` from the repo root with CLI
+0.1.185, also pinned in `agent-ci.yml`. The manifest
+pins source packager `codefly.dev/go:0.0.69`, whose image recipes use immutable
+digests. The gateway build pins Go 1.27.2 by tag and image-index digest and fixes
+`GOTOOLCHAIN`; keep `go.mod`, CI and the image toolchain in sync. A fresh service
+declares `backend: mem`; Runtime.Test probes health and authenticated Capabilities
+even when Start was not called, and returns an explicit PASSED/FAILED run result.
+Before the first published lock, set `SWH_GATEWAY_IMAGE` to a local build to
+exercise the generated-service test phase; published-image audit still refuses
+the absent digest. A passing binary audit is not full conformance. `codefly ci run` operates on a consuming workspace: this agent
+repository has no workspace manifest.
+
+Run the server locally against the zero-dependency backend — it needs no
+database, no warehouse credential, and no network. It still refuses an
+unauthenticated listener, so a local run states that choice (or sets
+`SWH_AUTH_TOKEN`):
+
+```sh
+SWH_BACKEND=mem SWH_ALLOW_ANONYMOUS=true go run ./cmd/service-warehouse
 ```
 
 The default `SWH_BACKEND=duckdb` refuses to start, by design: the DuckDB
@@ -111,6 +158,30 @@ version is pinned anywhere in the repo (codefly-dev/service-warehouse#7). If
 `buf generate` leaves you with a diff that is only those banner lines, revert
 it — you changed your toolchain, not the contract.
 
+## Releases
+
+A `v*` tag publishes the gateway image's tags first and the agent binary second,
+from one workflow, in that order. The image itself is published *before* the
+tag, because the agent pins its digest and a digest cannot be recorded in a
+commit the tag was already cut from; `README.md` ("Releasing") has the nine
+first-release steps. The manifest seed is 0.0.1; publish bumps the first release
+to v0.0.2, so dispatch the image publisher with 0.0.2. `gateway-image.json` records no digest until the first image exists, and
+every consumer of it — the agent, `Deploy`, the release — refuses an empty one
+rather than run `:latest`. The tag must match `version:` in `agent.codefly.yaml`
+or the job fails by design.
+
+The coordinator must use an explicit squash body with `Refs #12`; commit
+`632feea` contains a closing directive that must not enter the squash message.
+Keep the issue open until the release has been verified.
+
+Core is pinned in two places that move together: the `codefly-dev/core` version
+in `go.mod` and the commit SHA of core's reusable workflows in `release.yml` and
+`agent-ci.yml` (never `@main`: `release.yml` passes `secrets: inherit`). The image
+publisher is an explicitly labelled stopgap pending
+[core#770](https://github.com/codefly-dev/core/issues/770), the core 0.18.2 composite
+action: its job must stay in this repository so GHCR accepts its own job token.
+Do not restore the reusable publisher call; README owns the transition procedure.
+
 ## Where the depth is
 
 Keep this file short; depth belongs in the file that owns the subject.
@@ -121,9 +192,10 @@ Keep this file short; depth belongs in the file that owns the subject.
 - `internal/backend/backend.go` — the provider-agnostic interface every
   backend implements, and the portable type model.
 - [`cmd/service-warehouse/distribution_test.go`](cmd/service-warehouse/distribution_test.go)
-  — gates the claim that this repo ships no container image. It fails the day
-  the repo gains a way to build or deploy one; that is the day image SBOM
-  coverage is owed, and the gate is scoped to this repo only.
+  — gates the claim that this repo ships one image, the gateway, and that its
+  SBOM evidence exists. It lists every path that builds or deploys an image and
+  fails on one that is not accounted for, so a second image is the day more
+  image SBOM coverage is owed. The gate is scoped to this repo only.
 - A repeated multi-step procedure belongs in a `.claude/skills/<name>/SKILL.md`
   of its own, or in a nested `AGENTS.md` next to the code it describes —
   not in another paragraph here. There are none yet: this repo has three

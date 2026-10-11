@@ -1,0 +1,22 @@
+# Full-lifecycle agent validation: `codefly agent ci` runs the source, release,
+# and generated-service conformance gates against this agent, through the shared
+# reusable workflow every codefly service agent uses.
+#
+# Manual until a full run has been seen green on this repository. Packaging
+# needs Docker and source-packager/toolchain downloads; source validation alone
+# does not prove the release and generated-service stages. Switch to
+# pull_request once the first full run passes.
+name: agent-ci
+
+on:
+  workflow_dispatch:
+
+jobs:
+  agent-ci:
+    # Pinned to an immutable core commit SHA, not @main (see release.yml): core's
+    # v0.18.1, the release go.mod requires. Bump the two together.
+    uses: codefly-dev/core/.github/workflows/agent-ci.yml@ea49e7a968ef5f2fd325b1c41f823a47eb20141c
+    with:
+      # The CLI release the gate runs with. agent.codefly.yaml selects the
+      # source-packager version (0.0.69); go.mod selects Go 1.27.2.
+      codefly-cli-version: "0.1.185"
