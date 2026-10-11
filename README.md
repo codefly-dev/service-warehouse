@@ -278,8 +278,8 @@ seed is `0.0.1`; `codefly publish` increments it, so the **first release is
 5. Commit the returned lock in a reviewed PR. Let CI inventory both declared
    platforms (`linux/amd64`, `linux/arm64`), then merge that PR.
 6. Run the full `codefly agent ci` on synced `main`, including its audit and
-   generated-service `codefly ci run`. After it has passed, enable the PR trigger
-   in `agent-ci.yml`.
+   generated-service `codefly ci run`. Done for v0.0.2 (run 38167325616); since
+   then `agent-ci.yml` runs on every pull request.
 7. Confirm the repository's `GH_PAT` release secret is configured, and retain
    source packager `codefly.dev/go:0.0.69` and the patched Go 1.27.2 toolchain.
 8. From clean, synced `main` with Docker available, run `codefly publish`.
