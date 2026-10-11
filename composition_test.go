@@ -100,7 +100,7 @@ func TestResolveGatewayToken(t *testing.T) {
 	require.NoError(t, err)
 	second, err := rt.resolveGatewayToken()
 	require.NoError(t, err)
-	require.Len(t, first, 48, "24 random bytes, hex encoded")
+	require.Regexp(t, `^[0-9a-f]{64}$`, first, "32 random bytes, hex encoded")
 	require.NotEqual(t, first, second, "each run mints a fresh token, which is what revokes the last run's")
 }
 
@@ -412,7 +412,7 @@ func TestDeployRefusesWhileNoGatewayImageIsPublished(t *testing.T) {
 	resp, err := builder.Deploy(ctx, deployRequest(destination, nil, restricted))
 	require.NoError(t, err)
 	require.Equal(t, builderv0.DeploymentStatus_ERROR, resp.GetState().GetState())
-	require.Contains(t, resp.GetState().GetMessage(), "no gateway image has been published")
+	require.Contains(t, resp.GetState().GetMessage(), resources.ErrImageUnpublished.Error())
 }
 
 // TestDeployRestrictedBindsTheWorkloadIdentity pins what infra has to grant

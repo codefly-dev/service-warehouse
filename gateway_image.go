@@ -1,12 +1,9 @@
 package main
 
 import (
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
-	"strings"
 
 	"github.com/codefly-dev/core/resources"
 )
@@ -17,50 +14,14 @@ import (
 // TestGatewayImageNameIsThisRepository holds the two together.
 const gatewayImageName = "service-warehouse"
 
-// errGatewayImageUnpublished means gateway-image.json records no digest: the
-// image has not been published for any version yet. It is a state the tree
-// legitimately sits in between merging the agent and publishing its first
-// image, and the only safe reading of it is a refusal. A reference with no
-// digest and no tag is the registry's :latest, which is whatever was pushed
-// last and which the evidence contract refuses to inventory.
-var errGatewayImageUnpublished = errors.New("no gateway image has been published: gateway-image.json records no digest. " +
-	"Run publish-gateway-image.yml for the upcoming version and commit the digest it prints")
-
-// gatewayImageLock is the recorded identity of the published gateway image. It
-// carries no tag: the tag is the agent version, and a second copy of it is one
-// more thing to disagree with agent.codefly.yaml.
-type gatewayImageLock struct {
-	Name   string `json:"name"`
-	Digest string `json:"digest"`
-}
-
-// parseGatewayImageLock returns the image the lock pins. The registry comes from
-// core, never from the lock: a lock naming another registry is the lock being
-// wrong, not an instruction to run an image from there.
+// parseGatewayImageLock delegates lock validation to core, adding the service's
+// recovery instruction when no image has been published yet.
 func parseGatewayImageLock(content []byte) (*resources.DockerImage, error) {
-	var lock gatewayImageLock
-	if err := json.Unmarshal(content, &lock); err != nil {
-		return nil, fmt.Errorf("parse gateway image lock: %w", err)
+	image, err := resources.ParseImageLock(content, gatewayImageName)
+	if errors.Is(err, resources.ErrImageUnpublished) {
+		return nil, fmt.Errorf("%w: run publish-gateway-image.yml for the upcoming version and commit the digest it prints", err)
 	}
-	image := resources.PublishedImage(gatewayImageName, "")
-	if want := image.Repository + "/" + image.Name; lock.Name != want {
-		return nil, fmt.Errorf("gateway image lock names %q, but this service's gateway image is %q", lock.Name, want)
-	}
-	if lock.Digest == "" {
-		return nil, errGatewayImageUnpublished
-	}
-	if !isSHA256Digest(lock.Digest) {
-		return nil, fmt.Errorf("gateway image digest %q must be a sha256 digest", lock.Digest)
-	}
-	image.Digest = lock.Digest
-	return &image, nil
-}
-
-// isSHA256Digest reports whether digest is a complete sha256 image digest.
-func isSHA256Digest(digest string) bool {
-	algorithm, encoded, found := strings.Cut(digest, ":")
-	decoded, err := hex.DecodeString(encoded)
-	return found && algorithm == "sha256" && err == nil && len(decoded) == 32
+	return image, err
 }
 
 // gatewayImageOverrideEnv names a locally built gateway image to run instead of

@@ -24,6 +24,7 @@ var imageBuildCommands = []string{
 	"docker build",
 	"docker buildx",
 	"docker/build-push-action",
+	"codefly-dev/core/.github/workflows/publish-service-image.yml@",
 }
 
 // manifestExtensions can name an image this service deploys. Evidence binds to
@@ -134,7 +135,7 @@ func contentSignal(path, rel string) (string, error) {
 // to be re-checked against it.
 var shippedImage = []string{
 	".github/workflows/ci.yml: workflow runs docker build",
-	".github/workflows/publish-gateway-image.yml: workflow runs docker/build-push-action",
+	".github/workflows/publish-gateway-image.yml: workflow runs codefly-dev/core/.github/workflows/publish-service-image.yml@",
 	".github/workflows/release.yml: workflow runs docker build",
 	"Dockerfile: container image build definition",
 	"agent.codefly.yaml: Codefly agent manifest, whose Builder ships image build recipes",
@@ -237,7 +238,7 @@ func TestImageSignalsFindsAWorkflowImageBuild(t *testing.T) {
 	// the production list cannot fail when a command is dropped from it, which
 	// would silently narrow the gate.
 	commands := []string{"docker build", "docker buildx", "docker/build-push-action"}
-	if len(commands) != len(imageBuildCommands) {
+	if len(commands)+1 != len(imageBuildCommands) {
 		t.Fatalf("imageBuildCommands is %v; update this test to match", imageBuildCommands)
 	}
 	for _, command := range commands {
@@ -249,6 +250,14 @@ func TestImageSignalsFindsAWorkflowImageBuild(t *testing.T) {
 			requireSignal(t, root, filepath.Join(".github", "workflows", "release.yml"))
 		})
 	}
+}
+
+// Shared image publishers are image-producing paths even without local steps.
+func TestImageSignalsFindsTheCoreImagePublisher(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(".github", "workflows", "publish.yml")
+	write(t, root, path, "jobs:\n  publish:\n    uses: codefly-dev/core/.github/workflows/publish-service-image.yml@revision\n")
+	requireSignal(t, root, path)
 }
 
 // TestImageSignalsFindsADeployedImage covers an image this repository deploys

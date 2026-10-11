@@ -146,14 +146,14 @@ func TestUnsetLimitsFallBackToDefaults(t *testing.T) {
 
 // TestFromEnvRefusesAnUnauthenticatedListener is the startup guard: with
 // neither a token nor an explicit opt-out the server does not resolve, and the
-// message names both ways out and the header a client must send.
+// message names both ways out and the exposed capability.
 func TestFromEnvRefusesAnUnauthenticatedListener(t *testing.T) {
 	clearEnv(t)
 	t.Setenv("SWH_AUTH_TOKEN", "")
 
 	_, err := FromEnv()
 	require.Error(t, err)
-	for _, want := range []string{"SWH_AUTH_TOKEN", "x-codefly-token", "SWH_ALLOW_ANONYMOUS"} {
+	for _, want := range []string{"SWH_AUTH_TOKEN", "can run SQL", "SWH_ALLOW_ANONYMOUS"} {
 		require.ErrorContains(t, err, want)
 	}
 }

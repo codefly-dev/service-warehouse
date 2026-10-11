@@ -15,10 +15,11 @@ import (
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
 
-	"github.com/codefly-dev/service-warehouse/internal/imageevidence"
+	"github.com/codefly-dev/service-warehouse/internal/gatewayimage"
 )
 
 // testService is the identity newSBOMBuilder loads, and therefore the identity
@@ -43,20 +44,20 @@ func newSBOMBuilder(t *testing.T) *Builder {
 }
 
 func TestImageSubjectsCoverEveryPublishedPlatform(t *testing.T) {
-	subjects, err := imageevidence.Subjects(context.Background(), testService, pinnedReference, false)
+	subjects, err := sbom.ImageSubjects(context.Background(), sbom.PublishedImage{Service: testService, Role: gatewayimage.Role, Reference: pinnedReference, Platforms: gatewayimage.Platforms}, false)
 	require.NoError(t, err)
 
-	require.Len(t, subjects, len(imageevidence.Platforms), "one subject per shipped platform")
+	require.Len(t, subjects, len(gatewayimage.Platforms), "one subject per shipped platform")
 	covered := map[string]bool{}
 	for _, subject := range subjects {
 		require.Equal(t, sbom.SourceRegistry, sbom.SourceOf(subject))
 		require.NoError(t, sbom.RequirePinned(subject))
 		require.Equal(t, pinnedReference, subject.GetReference())
-		require.Equal(t, imageevidence.Role, subject.GetRole())
+		require.Equal(t, gatewayimage.Role, subject.GetRole())
 		require.Equal(t, testService, subject.GetService())
 		covered[subject.GetPlatform()] = true
 	}
-	for _, platform := range imageevidence.Platforms {
+	for _, platform := range gatewayimage.Platforms {
 		require.True(t, covered[platform], "no subject covers shipped platform %s", platform)
 	}
 }
@@ -70,7 +71,7 @@ func TestImageSubjectsRefuseAReferenceThatIsNotPinned(t *testing.T) {
 		registry + "/service-warehouse:latest",
 		registry + "/service-warehouse:0.0.1",
 	} {
-		_, err := imageevidence.Subjects(context.Background(), testService, reference, false)
+		_, err := sbom.ImageSubjects(context.Background(), sbom.PublishedImage{Service: testService, Role: gatewayimage.Role, Reference: reference, Platforms: gatewayimage.Platforms}, false)
 		require.Error(t, err, reference)
 	}
 }
@@ -84,13 +85,14 @@ func TestBuilderEnumeratesThePublishedImageOrRefuses(t *testing.T) {
 
 	subjects, err := builder.imageSubjects(context.Background())
 	if _, lockErr := publishedGatewayImage(); lockErr != nil {
-		require.ErrorIs(t, err, lockErr)
+		require.ErrorIs(t, lockErr, resources.ErrImageUnpublished)
+		require.ErrorIs(t, err, resources.ErrImageUnpublished)
 		return
 	}
 	require.NoError(t, err)
 	published, err := publishedGatewayImage()
 	require.NoError(t, err)
-	require.Len(t, subjects, len(imageevidence.Platforms))
+	require.Len(t, subjects, len(gatewayimage.Platforms))
 	for _, subject := range subjects {
 		require.Equal(t, published.FullName(), subject.GetReference())
 		require.Equal(t, testService, subject.GetService())
@@ -98,11 +100,11 @@ func TestBuilderEnumeratesThePublishedImageOrRefuses(t *testing.T) {
 }
 
 func TestImageEvidenceSatisfiesTheCoverageContract(t *testing.T) {
-	subjects, err := imageevidence.Subjects(context.Background(), testService, pinnedReference, false)
+	subjects, err := sbom.ImageSubjects(context.Background(), sbom.PublishedImage{Service: testService, Role: gatewayimage.Role, Reference: pinnedReference, Platforms: gatewayimage.Platforms}, false)
 	require.NoError(t, err)
 
 	// The expectation is built from the platforms the release pipeline actually
-	// publishes, never from imageevidence: deriving both sides from the code
+	// publishes, never from gatewayimage: deriving both sides from the code
 	// under test compares it against itself, and would validate however many
 	// platforms it dropped.
 	expected := expectedFromReleasePipeline(t, pinnedReference)
@@ -156,7 +158,7 @@ func TestImageScopeReportsFailureRatherThanCoverage(t *testing.T) {
 
 func TestSourceScopeKeepsTheExistingInventory(t *testing.T) {
 	t.Setenv(gatewayImageOverrideEnv, "")
-	subjects, err := imageevidence.Subjects(context.Background(), testService, pinnedReference, false)
+	subjects, err := sbom.ImageSubjects(context.Background(), sbom.PublishedImage{Service: testService, Role: gatewayimage.Role, Reference: pinnedReference, Platforms: gatewayimage.Platforms}, false)
 	require.NoError(t, err)
 
 	// A cancelled context stops the scan before it reaches the network, which is
@@ -188,7 +190,7 @@ func TestImageSBOMIsServedButNotAdvertised(t *testing.T) {
 	// And it is served: an explicit subject is scanned rather than answered as
 	// unsupported, so the failure here is the scanner's, not a missing
 	// implementation.
-	subject := &builderv0.ImageSubject{Reference: "not-pinned", Service: testService, Role: imageevidence.Role}
+	subject := &builderv0.ImageSubject{Reference: "not-pinned", Service: testService, Role: gatewayimage.Role}
 	resp, err := newSBOMBuilder(t).SBOM(context.Background(), &builderv0.SBOMRequest{
 		Scope:    builderv0.SBOMScope_SBOM_SCOPE_IMAGE,
 		Subjects: []*builderv0.ImageSubject{subject},
@@ -200,7 +202,7 @@ func TestImageSBOMIsServedButNotAdvertised(t *testing.T) {
 
 func TestShippedPlatformsMatchTheReleasePipeline(t *testing.T) {
 	published := append([]string(nil), publishedPlatforms(t)...)
-	declared := append([]string(nil), imageevidence.Platforms...)
+	declared := append([]string(nil), gatewayimage.Platforms...)
 	// Compare as sets: the pipeline and the code have to name the same
 	// platforms, but neither owns the order the other writes them in.
 	sort.Strings(published)
@@ -233,43 +235,37 @@ func expectedFromReleasePipeline(t *testing.T, reference string) []*builderv0.Im
 		expected = append(expected, &builderv0.ImageSubject{
 			Reference: reference,
 			Platform:  platform,
-			Role:      imageevidence.Role,
+			Role:      gatewayimage.Role,
 			Service:   testService,
 		})
 	}
 	return expected
 }
 
-// publishedPlatforms reads the platforms the pipeline actually builds, from the
-// step that pushes the image rather than from any step that happens to carry a
-// platform list.
+// publishedPlatforms reads the explicit inputs supplied to core's publisher.
 func publishedPlatforms(t *testing.T) []string {
 	t.Helper()
 	var workflow struct {
 		Jobs map[string]struct {
-			Steps []struct {
-				Uses string `yaml:"uses"`
-				With struct {
-					Platforms string `yaml:"platforms"`
-				} `yaml:"with"`
-			} `yaml:"steps"`
+			Uses string `yaml:"uses"`
+			With struct {
+				Platforms string `yaml:"platforms"`
+			} `yaml:"with"`
 		} `yaml:"jobs"`
 	}
 	require.NoError(t, yaml.Unmarshal([]byte(workflowBody(t, "publish-gateway-image.yml")), &workflow))
 	var published []string
 	for _, job := range workflow.Jobs {
-		for _, step := range job.Steps {
-			if !strings.Contains(step.Uses, "docker/build-push-action") {
-				continue
-			}
-			for _, platform := range strings.Split(step.With.Platforms, ",") {
-				if platform = strings.TrimSpace(platform); platform != "" {
-					published = append(published, platform)
-				}
+		if !strings.HasPrefix(job.Uses, "codefly-dev/core/.github/workflows/publish-service-image.yml@") {
+			continue
+		}
+		for _, platform := range strings.Split(job.With.Platforms, ",") {
+			if platform = strings.TrimSpace(platform); platform != "" {
+				published = append(published, platform)
 			}
 		}
 	}
-	require.NotEmpty(t, published, "the publish workflow's build-push step publishes no platforms")
+	require.NotEmpty(t, published, "the publisher must declare the platforms evidence covers")
 	return published
 }
 

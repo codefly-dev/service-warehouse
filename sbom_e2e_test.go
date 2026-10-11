@@ -43,7 +43,10 @@ func TestImageSBOMInventoriesTheGatewayImage(t *testing.T) {
 	require.Len(t, subjects, 1, "the single platform the daemon holds")
 	require.Equal(t, sbom.SourceDockerDaemon, sbom.SourceOf(subjects[0]))
 	require.Equal(t, override, subjects[0].GetReference())
-	require.Empty(t, subjects[0].GetPlatform(), "the platform is read from the image rather than assumed")
+	require.NotEmpty(t, subjects[0].GetPlatform(), "core reads the platform from the daemon image")
+	id, err := sbom.LocalImageID(context.Background(), override)
+	require.NoError(t, err)
+	require.Equal(t, id, subjects[0].GetDigest())
 	require.NoError(t, sbom.RequirePinned(subjects[0]))
 
 	resp, err := builder.SBOM(context.Background(), &builderv0.SBOMRequest{Scope: builderv0.SBOMScope_SBOM_SCOPE_IMAGE})
@@ -58,7 +61,7 @@ func TestImageSBOMInventoriesTheGatewayImage(t *testing.T) {
 	// resolved to any other identity describes an image nobody asked for.
 	require.Equal(t, subjects[0].GetDigest(), evidence.GetDigest())
 	require.True(t, strings.HasPrefix(evidence.GetDigest(), "sha256:"))
-	require.NotEmpty(t, evidence.GetPlatform(), "evidence names no platform")
+	require.Equal(t, subjects[0].GetPlatform(), evidence.GetPlatform())
 	require.NotEmpty(t, evidence.GetSha256(), "evidence carries no document checksum")
 
 	var goModules, osPackages int

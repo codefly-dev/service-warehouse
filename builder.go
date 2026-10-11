@@ -8,13 +8,14 @@ import (
 
 	"github.com/codefly-dev/core/agents/communicate"
 	"github.com/codefly-dev/core/agents/services"
+	"github.com/codefly-dev/core/agents/services/sbom"
 	v0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/standards"
 	"github.com/codefly-dev/core/wool"
 
-	"github.com/codefly-dev/service-warehouse/internal/imageevidence"
+	"github.com/codefly-dev/service-warehouse/internal/gatewayimage"
 )
 
 type Builder struct {
@@ -111,15 +112,18 @@ func (s *Builder) SBOM(ctx context.Context, req *builderv0.SBOMRequest) (*builde
 // them. The gateway is the only one: the service has no init, migration or
 // sidecar image, and the warehouse behind it is not run by this service.
 //
-// The subjects themselves come from imageevidence, which the release command
-// reads too, so the evidence a release publishes describes the same images the
-// agent reports.
+// Core derives the subjects from the same gateway metadata the release command
+// uses, so release evidence describes the images the agent reports.
 func (s *Builder) imageSubjects(ctx context.Context) ([]*builderv0.ImageSubject, error) {
 	image, overridden, err := effectiveGatewayImage()
 	if err != nil {
 		return nil, err
 	}
-	return imageevidence.Subjects(ctx, s.Base.Unique(), image.FullName(), overridden)
+	published := sbom.PublishedImage{Service: s.Base.Unique(), Role: gatewayimage.Role, Reference: image.FullName()}
+	if !overridden {
+		published.Platforms = gatewayimage.Platforms
+	}
+	return sbom.ImageSubjects(ctx, published, overridden)
 }
 
 func (s *Builder) Deploy(ctx context.Context, req *builderv0.DeploymentRequest) (*builderv0.DeploymentResponse, error) {

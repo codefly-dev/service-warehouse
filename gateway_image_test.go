@@ -8,11 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/codefly-dev/core/agents"
 	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
 
-	"github.com/codefly-dev/service-warehouse/internal/auth"
 	"github.com/codefly-dev/service-warehouse/internal/config"
 
 	// The mem backend is registered here, in a test, so config.FromEnv can
@@ -50,11 +48,15 @@ func TestParseGatewayImageLockRejectsAnythingButASHA256Digest(t *testing.T) {
 		"truncated":        `{"name": "` + name + `", "digest": "sha256:1205da07"}`,
 		"not hex":          `{"name": "` + name + `", "digest": "sha256:zzzzda0743e56b68c12c754438476e8fdd0f05cdb08ce1c9687ddb8d8f0e1669"}`,
 		"not json":         `sha256:1205da07`,
+		"uppercase digest": `{"name": "` + name + `", "digest": "` + strings.ToUpper(digest) + `"}`,
+		"uppercase hex":    `{"name": "` + name + `", "digest": "sha256:` + strings.ToUpper(strings.TrimPrefix(digest, "sha256:")) + `"}`,
+		"unknown key":      `{"name": "` + name + `", "digest": "` + digest + `", "tag": "latest"}`,
+		"trailing json":    `{"name": "` + name + `", "digest": "` + digest + `"} {}`,
 	} {
 		t.Run(label, func(t *testing.T) {
 			_, err := parseGatewayImageLock([]byte(lock))
 			require.Error(t, err, "accepted a lock that pins no image")
-			require.NotErrorIs(t, err, errGatewayImageUnpublished)
+			require.NotErrorIs(t, err, resources.ErrImageUnpublished)
 		})
 	}
 }
@@ -64,7 +66,7 @@ func TestParseGatewayImageLockRejectsAnythingButASHA256Digest(t *testing.T) {
 // safe reading is a refusal that says what to do.
 func TestAnUnpublishedLockIsRefusedNeverRunAsLatest(t *testing.T) {
 	image, err := parseGatewayImageLock([]byte(`{"name": "` + registry + `/service-warehouse", "digest": ""}`))
-	require.ErrorIs(t, err, errGatewayImageUnpublished)
+	require.ErrorIs(t, err, resources.ErrImageUnpublished)
 	require.Nil(t, image)
 	require.Contains(t, err.Error(), "publish-gateway-image.yml")
 }
@@ -99,7 +101,7 @@ func TestTheOverrideDecidesTheRunButNotThePublishedImage(t *testing.T) {
 	if err == nil {
 		require.NotEqual(t, "service-warehouse:local", published.FullName())
 	} else {
-		require.ErrorIs(t, err, errGatewayImageUnpublished)
+		require.ErrorIs(t, err, resources.ErrImageUnpublished)
 	}
 
 	t.Setenv(gatewayImageOverrideEnv, "")
@@ -127,9 +129,9 @@ func TestGatewayImageNameIsThisRepository(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, string(lock), `"name": "ghcr.io/`+repository+`"`)
 
-	for _, workflow := range []string{"publish-gateway-image.yml", "release.yml"} {
-		require.Contains(t, workflowBody(t, workflow), "IMAGE: ghcr.io/${{ github.repository }}", workflow)
-	}
+	require.Contains(t, workflowBody(t, "release.yml"), "IMAGE: ghcr.io/${{ github.repository }}")
+	// The shared publisher derives the image name from the caller repository.
+	require.NotContains(t, workflowBody(t, "publish-gateway-image.yml"), "image-name:")
 }
 
 // The container port is stated once in the agent and handed to the gateway as
@@ -151,13 +153,6 @@ func TestGatewayContainerPortIsTheGatewaysDefault(t *testing.T) {
 	require.Regexp(t, regexp.MustCompile(fmt.Sprintf(`(?m)^EXPOSE %d$`, gatewayContainerPort)), string(dockerfile))
 }
 
-// The agent presents the token under the key the gateway enforces. internal/auth
-// redeclares the key because the gateway must not link core's agent runtime; the
-// agent does link it, so this is where a divergence is caught.
-func TestTheTokenKeyIsTheOneCoreAuthenticatesAgentsWith(t *testing.T) {
-	require.Equal(t, agents.AuthMetadataKey, auth.MetadataKey)
-}
-
 // The agent is released without cgo (.goreleaser.yaml) and must stay free of the
 // gateway's backends: the embedded DuckDB engine is a cgo driver, and linking it
 // here would turn the release's CGO_ENABLED=0 build into one that fails the day
@@ -170,4 +165,18 @@ func TestAgentLinksNoBackendDriver(t *testing.T) {
 			strings.Contains(dependency, "duckdb"),
 			"the agent links %s, a backend the gateway carries", dependency)
 	}
+}
+
+// The gateway may use core's standalone caller token, but must not acquire the
+// agent runtime or any of its resource orchestration dependencies.
+func TestGatewayLinksOnlyCoreCallerToken(t *testing.T) {
+	out, err := exec.Command("go", "list", "-deps", "-f", "{{.ImportPath}}", "./cmd/service-warehouse").Output()
+	require.NoError(t, err)
+	var linked []string
+	for _, dependency := range strings.Fields(string(out)) {
+		if strings.HasPrefix(dependency, "github.com/codefly-dev/core/") {
+			linked = append(linked, dependency)
+		}
+	}
+	require.Equal(t, []string{"github.com/codefly-dev/core/callertoken"}, linked)
 }

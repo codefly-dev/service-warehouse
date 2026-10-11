@@ -2,8 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"fmt"
 	"os"
 	"time"
@@ -18,12 +16,12 @@ import (
 	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
 
 	"github.com/codefly-dev/core/agents/services"
+	"github.com/codefly-dev/core/callertoken"
 	"github.com/codefly-dev/core/resources"
 	dockerrun "github.com/codefly-dev/core/runners/dockerrun"
 	"github.com/codefly-dev/core/wool"
 
 	whv0 "github.com/codefly-dev/service-warehouse/gen/codefly/warehouse/v0"
-	"github.com/codefly-dev/service-warehouse/internal/auth"
 )
 
 // gatewayContainerPort is the port the gateway listens on inside its container.
@@ -157,7 +155,7 @@ func (s *Runtime) resolveGatewayToken() (string, error) {
 	if s.conf.authToken != "" {
 		return s.conf.authToken, nil
 	}
-	return randomSecret()
+	return callertoken.Generate()
 }
 
 // startGateway runs the gateway container, mapping the assigned host port onto
@@ -261,7 +259,7 @@ func (s *Runtime) WaitForReady(ctx context.Context) error {
 
 	conn, err := grpc.NewClient(address,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		auth.DialOption(s.gatewayToken))
+		callertoken.DialOption(s.gatewayToken))
 	if err != nil {
 		return s.Wool.Wrapf(err, "cannot create gateway client for %s", address)
 	}
@@ -343,14 +341,4 @@ func (s *Runtime) Destroy(ctx context.Context, req *runtimev0.DestroyRequest) (*
 
 func (s *Runtime) Test(ctx context.Context, req *runtimev0.TestRequest) (*runtimev0.TestResponse, error) {
 	return s.Runtime.TestResponse()
-}
-
-// randomSecret returns an unguessable hex secret, so the published port is never
-// reachable with a well-known credential.
-func randomSecret() (string, error) {
-	b := make([]byte, 24)
-	if _, err := rand.Read(b); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(b), nil
 }

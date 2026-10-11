@@ -109,10 +109,11 @@ With `SWH_AUTH_TOKEN` set, every RPC — unary and streaming, `Capabilities`
 included — must carry the secret as the `x-codefly-token` gRPC metadata header,
 the key the Codefly host already uses to authenticate agent plugins. Anything
 else is rejected with `UNAUTHENTICATED` before it reaches a backend. The token
-is compared in constant time and never logged. The standard gRPC health service
-(`grpc.health.v1.Health`) is the one exemption: a readiness probe carries no
-token. It reports that the process is serving, not that a warehouse is
-reachable.
+is compared in constant time and never logged by core's `callertoken` package.
+Only `grpc.health.v1.Health/Check` and `/Watch` are exempt; `/List` still needs
+the token. These probes report that the process is serving, not that a warehouse
+is reachable. An interceptor configured with an empty server token fails closed;
+the explicit anonymous mode installs no token interceptor.
 
 This is authentication only — whether the caller holds the deployment's token.
 The server still authorizes nothing: which caller may run which statement is
@@ -131,8 +132,8 @@ image, pinned by digest in [`gateway-image.json`](gateway-image.json).
 **What a consumer receives.** The configuration group `warehouse`, with
 `connection` (`grpc://host:port`), `endpoint` (`host:port`) and `token`, a
 secret value to send as the `x-codefly-token` metadata header. The agent mints a
-fresh token for every local run unless an operator pins one, so a run revokes the
-previous run's.
+fresh 64-character lowercase hex token (256 random bits) for every local run
+unless an operator pins one, so a run revokes the previous run's.
 
 **Locally** (`codefly run`) the agent starts the gateway container, publishes its
 port, waits until the gateway reports itself serving *and* accepts the agent's
@@ -174,11 +175,12 @@ that was scanned and attributed to the service. The scanner is core's
 (`sbom.Image`, through `BuilderWrapper.SBOMImages`), and the response is checked
 against core's `sbom.ValidateCoverage`.
 
-- [`internal/imageevidence`](internal/imageevidence/imageevidence.go) holds the
-  one list of shipped platforms and the subjects derived from it; the agent, the
-  release command and the tests all read it.
-- [`cmd/image-sbom`](cmd/image-sbom/main.go) writes the documents. A release runs
-  it against the digest [`gateway-image.json`](gateway-image.json) records and
+- [`internal/gatewayimage`](internal/gatewayimage/image.go) declares the shipped
+  platforms and role. Core's `sbom.ImageSubjects` derives one subject per declared
+  platform; local images get their digest and platform from the Docker daemon.
+- [`cmd/image-sbom`](cmd/image-sbom/main.go) is a thin entry point to core's
+  `CollectImageEvidence` and `WriteImageEvidenceIndex`. A release runs it
+  against the digest [`gateway-image.json`](gateway-image.json) records and
   attaches them as the `gateway-image-sbom-<version>` workflow artifact, before
   the tags consumers resolve are created, so an image whose scan failed is never
   pullable by the version it was built for.
@@ -211,7 +213,10 @@ The digest is only known once the image is built, so the order is fixed, and
 
 1. Find the upcoming version with `codefly publish --dry-run`.
 2. Run the `publish-gateway-image` workflow with that version (no `v`). It
-   pushes the image by digest, carrying no tag, and prints `gateway-image.json`.
+   calls core's pinned `publish-service-image.yml`, pushes the image by digest,
+   carrying no tag, and prints `gateway-image.json`. The publisher uses
+   `persist-credentials: false` and refuses a commit outside the default branch's
+   history.
 3. Commit that file in a reviewed change. Until it is committed the lock records
    no digest, and the agent, the deployment and the release all refuse to name an
    image.
@@ -222,7 +227,12 @@ The digest is only known once the image is built, so the order is fixed, and
 
 The release call needs a `GH_PAT` secret in the repository (`secrets: inherit`).
 
-[sbom]: https://github.com/codefly-dev/core/blob/v0.16.0/docs/sbom.md
+The lock is parsed by core's `resources.ParseImageLock`: it must name
+`ghcr.io/codefly-dev/service-warehouse`, contain only `name` and `digest`, and
+use `sha256:` followed by 64 lowercase hex characters. An empty digest records
+an unpublished image and is refused by the agent and release.
+
+[sbom]: https://github.com/codefly-dev/core/blob/v0.18.1/docs/sbom.md
 
 ## Develop
 
@@ -269,12 +279,11 @@ proto/buf.{yaml,gen.yaml}     buf config, read by the proto companion
 gen/                          generated gRPC stubs
 internal/backend/             Backend interface + mem, duckdb (+ cloud backends)
 internal/server/              gRPC Warehouse implementation + proto↔backend mapping
-internal/auth/                caller authentication (the x-codefly-token interceptors)
 internal/config/              env configuration
 internal/serr/                normalized error model
 cmd/service-warehouse/        the server binary
 cmd/image-sbom/               writes the image's SBOM evidence (run by the release)
-internal/imageevidence/       the shipped platforms and the SBOM subjects derived from them
+internal/gatewayimage/        the shipped platforms and runtime role; core derives evidence
 main.go runtime.go builder.go the codefly agent (codefly.dev/warehouse) that runs the gateway
 agent.codefly.yaml            the agent's manifest and version
 gateway-image.json            the gateway image the agent pins, by digest

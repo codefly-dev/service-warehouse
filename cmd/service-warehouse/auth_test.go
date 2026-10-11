@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codefly-dev/core/callertoken"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -20,7 +21,6 @@ import (
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	whv0 "github.com/codefly-dev/service-warehouse/gen/codefly/warehouse/v0"
-	"github.com/codefly-dev/service-warehouse/internal/auth"
 	"github.com/codefly-dev/service-warehouse/internal/backend"
 	"github.com/codefly-dev/service-warehouse/internal/backend/mem"
 )
@@ -56,7 +56,7 @@ type rpc struct {
 }
 
 // registeredRPCs lists every method of every service the server registers
-// except the health service, read from the server rather than from a list kept
+// except health Check/Watch, read from the server rather than from a list kept
 // beside it: an RPC added to the proto, or a service added to the server, is
 // covered by the refusal tests the moment it exists, without anyone remembering
 // to extend them.
@@ -70,7 +70,7 @@ func registeredRPCs(t *testing.T, srv *grpc.Server) []rpc {
 	for service, info := range srv.GetServiceInfo() {
 		for _, m := range info.Methods {
 			full := "/" + service + "/" + m.Name
-			if auth.IsHealthMethod(full) {
+			if callertoken.IsHealthMethod(full) {
 				continue
 			}
 			rpcs = append(rpcs, rpc{name: full, call: caller(full, m)})
@@ -140,10 +140,10 @@ func TestUnauthenticatedPeerIsRefused(t *testing.T) {
 
 	peers := map[string]*grpc.ClientConn{
 		"no credentials":   dial(),
-		"wrong token":      dial(auth.DialOption("00000000000000000000000000000000")),
-		"prefix of token":  dial(auth.DialOption(serverToken[:len(serverToken)-1])),
-		"token plus extra": dial(auth.DialOption(serverToken + "x")),
-		"empty token":      dial(auth.DialOption("")),
+		"wrong token":      dial(callertoken.DialOption("00000000000000000000000000000000")),
+		"prefix of token":  dial(callertoken.DialOption(serverToken[:len(serverToken)-1])),
+		"token plus extra": dial(callertoken.DialOption(serverToken + "x")),
+		"empty token":      dial(callertoken.DialOption("")),
 	}
 
 	for peerName, conn := range peers {
@@ -165,7 +165,7 @@ func TestUnauthenticatedPeerIsRefused(t *testing.T) {
 // Unimplemented) still proves the interceptor let the call through.
 func TestAuthorizedPeerReachesTheHandler(t *testing.T) {
 	srv, dial := startGateway(t, serverToken)
-	conn := dial(auth.DialOption(serverToken))
+	conn := dial(callertoken.DialOption(serverToken))
 
 	for _, r := range registeredRPCs(t, srv) {
 		t.Run(r.name, func(t *testing.T) {
@@ -181,7 +181,7 @@ func TestAuthorizedPeerReachesTheHandler(t *testing.T) {
 // the same metadata key the codefly host uses for agent plugins, so a caller
 // built against that convention interoperates.
 func TestTokenTravelsUnderTheEcosystemKey(t *testing.T) {
-	require.Equal(t, "x-codefly-token", auth.MetadataKey)
+	require.Equal(t, "x-codefly-token", callertoken.MetadataKey)
 
 	_, dial := startGateway(t, serverToken)
 	conn := dial()
@@ -207,7 +207,7 @@ func TestTokenUnderAnotherHeaderIsRefused(t *testing.T) {
 }
 
 // TestHealthNeedsNoToken pins the one exemption: the standard gRPC health
-// service answers a peer that presents no token. A readiness probe — the Codefly
+// Check and Watch answer a peer that presents no token. A readiness probe — the Codefly
 // CLI's, a load balancer's, a mesh's — carries none, and a guarded health service
 // makes the gateway look permanently unready to all of them. Every data RPC stays
 // refused; TestUnauthenticatedPeerIsRefused holds that side.
@@ -226,6 +226,11 @@ func TestHealthNeedsNoToken(t *testing.T) {
 	first, err := stream.Recv()
 	require.NoError(t, err)
 	require.Equal(t, healthv1.HealthCheckResponse_SERVING, first.GetStatus())
+
+	_, err = health.List(ctx, &healthv1.HealthListRequest{})
+	require.Equal(t, codes.Unauthenticated, status.Code(err), "List enumerates services and is not exempt")
+	_, err = healthv1.NewHealthClient(dial(callertoken.DialOption(serverToken))).List(ctx, &healthv1.HealthListRequest{})
+	require.NoError(t, err)
 }
 
 // TestWithoutATokenTheListenerIsAnonymous is the other side of the config guard:

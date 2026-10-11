@@ -19,8 +19,8 @@ on:
 jobs:
   agent-ci:
     # Pinned to an immutable core commit SHA, not @main (see release.yml): core's
-    # v0.16.0, the release go.mod requires. Bump the two together.
-    uses: codefly-dev/core/.github/workflows/agent-ci.yml@e54bc852f3d40cd1aeafc0ced2369a8c13a51bb8
+    # v0.18.1, the release go.mod requires. Bump the two together.
+    uses: codefly-dev/core/.github/workflows/agent-ci.yml@ea49e7a968ef5f2fd325b1c41f823a47eb20141c
     with:
       # The CLI release the gate runs with. The go source-packager it installs
       # is the one the CLI pins, so bumping this is how that pin moves.

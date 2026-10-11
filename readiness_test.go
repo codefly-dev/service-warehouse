@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codefly-dev/core/callertoken"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
@@ -16,7 +17,6 @@ import (
 	healthv1 "google.golang.org/grpc/health/grpc_health_v1"
 
 	whv0 "github.com/codefly-dev/service-warehouse/gen/codefly/warehouse/v0"
-	"github.com/codefly-dev/service-warehouse/internal/auth"
 	"github.com/codefly-dev/service-warehouse/internal/backend"
 	"github.com/codefly-dev/service-warehouse/internal/backend/mem"
 	"github.com/codefly-dev/service-warehouse/internal/server"
@@ -33,8 +33,8 @@ func startGateway(t *testing.T, token string) (string, *grpchealth.Server) {
 	require.NoError(t, err)
 	health := grpchealth.NewServer()
 	srv := grpc.NewServer(
-		grpc.ChainUnaryInterceptor(auth.UnaryInterceptor(token)),
-		grpc.ChainStreamInterceptor(auth.StreamInterceptor(token)),
+		grpc.ChainUnaryInterceptor(callertoken.UnaryServerInterceptor(token)),
+		grpc.ChainStreamInterceptor(callertoken.StreamServerInterceptor(token)),
 	)
 	healthv1.RegisterHealthServer(srv, health)
 	whv0.RegisterWarehouseServer(srv, server.New(mem.New(backend.Config{})))
@@ -96,7 +96,7 @@ func TestWaitForReadyWaitsForTheGatewayToServe(t *testing.T) {
 
 func TestProbeGatewayDistinguishesNotYetFromNever(t *testing.T) {
 	address, health := startGateway(t, "server-token")
-	conn, err := grpc.NewClient(address, grpc.WithTransportCredentials(insecureCredentials()), auth.DialOption("server-token"))
+	conn, err := grpc.NewClient(address, grpc.WithTransportCredentials(insecureCredentials()), callertoken.DialOption("server-token"))
 	require.NoError(t, err)
 	defer conn.Close()
 	healthClient, warehouse := healthv1.NewHealthClient(conn), whv0.NewWarehouseClient(conn)

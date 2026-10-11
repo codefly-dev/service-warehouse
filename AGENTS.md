@@ -19,14 +19,14 @@ this file needs a fix in the same PR.
   tenant, a permission, a product noun, a business rule, or which application
   is asking. The server is bound to one database and authorizes nothing; the
   caller's authority is settled before the request arrives.
-- **Depends on:** the warehouse drivers and the gRPC contract, nothing else.
-  The SBOM scanner and the image-SBOM contract live in `codefly-dev/core` and
-  are not reimplemented here.
+- **Depends on:** the warehouse drivers, the gRPC contract, and core's lightweight
+  `callertoken` package. Caller authentication, image lock parsing, the SBOM
+  scanner and evidence writing live in `codefly-dev/core` and are not copied here.
 - **The agent is a second program in this module.** The repo-root `main`
   package (`main.go`, `runtime.go`, `builder.go`) is the codefly agent that
-  lets a workspace compose the gateway; it links `codefly-dev/core`, and
-  `cmd/service-warehouse` must not. The agent links no backend, so no cgo
-  driver reaches its `CGO_ENABLED=0` release build
+  lets a workspace compose the gateway; it links core's agent runtime, which
+  `cmd/service-warehouse` must not (it uses only core's `callertoken`). The agent
+  links no backend, so no cgo driver reaches its `CGO_ENABLED=0` release build
   (`TestAgentLinksNoBackendDriver`). Like the gateway, it authorizes nothing: it
   starts the gateway, hands out the one token it enforces, and renders the
   manifest.
@@ -156,8 +156,9 @@ rather than run `:latest`. The tag must match `version:` in `agent.codefly.yaml`
 or the job fails by design.
 
 Core is pinned in two places that move together: the `codefly-dev/core` version
-in `go.mod` and the commit SHA of core's reusable workflows in `release.yml` and
-`agent-ci.yml` (never `@main`: `release.yml` passes `secrets: inherit`).
+in `go.mod` and the commit SHA of core's reusable workflows in `release.yml`,
+`agent-ci.yml` and `publish-gateway-image.yml` (never `@main`: `release.yml`
+passes `secrets: inherit`).
 
 ## Where the depth is
 

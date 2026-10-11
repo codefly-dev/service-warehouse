@@ -28,6 +28,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codefly-dev/core/callertoken"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
@@ -41,7 +42,6 @@ import (
 	"google.golang.org/grpc/status"
 
 	whv0 "github.com/codefly-dev/service-warehouse/gen/codefly/warehouse/v0"
-	"github.com/codefly-dev/service-warehouse/internal/auth"
 )
 
 func TestRuntimeEndToEnd(t *testing.T) {
@@ -114,7 +114,7 @@ func TestRuntimeEndToEnd(t *testing.T) {
 
 	conn, err := grpc.NewClient(endpoint,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		auth.DialOption(token))
+		callertoken.DialOption(token))
 	require.NoError(t, err)
 	defer conn.Close()
 	capabilities, err := whv0.NewWarehouseClient(conn).Capabilities(ctx, &whv0.CapabilitiesRequest{})
@@ -153,7 +153,7 @@ func requireUnauthenticatedPeerIsRefused(t *testing.T, endpoint string) {
 	t.Helper()
 	peers := map[string][]grpc.DialOption{
 		"no credentials": nil,
-		"wrong token":    {auth.DialOption("0000000000000000000000000000000000000000000000000000000000000000")},
+		"wrong token":    {callertoken.DialOption("0000000000000000000000000000000000000000000000000000000000000000")},
 	}
 	for peerName, extra := range peers {
 		conn, err := grpc.NewClient(endpoint,

@@ -14,10 +14,11 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/codefly-dev/core/agents/services/sbom"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/shared"
 
-	"github.com/codefly-dev/service-warehouse/internal/imageevidence"
+	"github.com/codefly-dev/service-warehouse/internal/gatewayimage"
 )
 
 func main() {
@@ -41,17 +42,21 @@ func main() {
 	}
 
 	ctx := context.Background()
-	subjects, err := imageevidence.Subjects(ctx, *service, *image, *local)
+	published := sbom.PublishedImage{Service: *service, Role: gatewayimage.Role, Reference: *image}
+	if !*local {
+		published.Platforms = gatewayimage.Platforms
+	}
+	subjects, err := sbom.ImageSubjects(ctx, published, *local)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "image-sbom: %v\n", err)
 		os.Exit(1)
 	}
-	documents, err := imageevidence.Collect(ctx, *out, subjects)
+	documents, err := sbom.CollectImageEvidence(ctx, *out, subjects)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "image-sbom: %v\n", err)
 		os.Exit(1)
 	}
-	if err := imageevidence.WriteIndex(*out, documents); err != nil {
+	if err := sbom.WriteImageEvidenceIndex(*out, documents); err != nil {
 		fmt.Fprintf(os.Stderr, "image-sbom: %v\n", err)
 		os.Exit(1)
 	}
