@@ -35,7 +35,7 @@ jobs:
       - name: end-to-end run through the agent runtime
         env:
           SWH_GATEWAY_IMAGE: service-warehouse:e2e
-        run: go test -tags e2e -count=1 -timeout 300s -run TestRuntimeEndToEnd .
+        run: go test -v -tags e2e -count=1 -timeout 300s -run TestRuntimeEndToEnd .
 
   # Inventories a real gateway image through the agent's own image-SBOM path and
   # checks it against the shared coverage contract, so a change that would ship
@@ -56,7 +56,7 @@ jobs:
       - name: assert the image contract against a real image
         env:
           SWH_GATEWAY_IMAGE: service-warehouse:e2e
-        run: go test -tags e2e -count=1 -timeout 300s -run TestImageSBOM .
+        run: go test -v -tags e2e -count=1 -timeout 300s -run TestImageSBOM .
       - name: write evidence through the release command
         run: go run ./cmd/image-sbom -image service-warehouse:e2e -local -out sbom
       # The local image is single-platform and reached through the daemon. The

@@ -250,7 +250,7 @@ one also needs `syft` on `PATH`:
 
 ```bash
 docker build -t service-warehouse:e2e .
-SWH_GATEWAY_IMAGE=service-warehouse:e2e go test -tags e2e -count=1 .
+SWH_GATEWAY_IMAGE=service-warehouse:e2e go test -v -tags e2e -count=1 .
 ```
 
 With `SWH_GATEWAY_IMAGE` unset they skip, and a skipped run still prints `ok`:

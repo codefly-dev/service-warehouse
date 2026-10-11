@@ -105,8 +105,8 @@ Two more CI jobs need Docker and are not part of that gate. They build the image
 the `e2e` build tag:
 
 ```sh
-SWH_GATEWAY_IMAGE=service-warehouse:e2e go test -tags e2e -count=1 -run TestRuntimeEndToEnd .
-SWH_GATEWAY_IMAGE=service-warehouse:e2e go test -tags e2e -count=1 -run TestImageSBOM .   # needs syft on PATH
+SWH_GATEWAY_IMAGE=service-warehouse:e2e go test -v -tags e2e -count=1 -run TestRuntimeEndToEnd .
+SWH_GATEWAY_IMAGE=service-warehouse:e2e go test -v -tags e2e -count=1 -run TestImageSBOM .   # needs syft on PATH
 ```
 
 **A green e2e run is not evidence that anything ran.** With
