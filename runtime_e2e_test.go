@@ -78,6 +78,8 @@ func TestRuntimeEndToEnd(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, runtimev0.TestStatus_SUCCESS, tested.GetStatus().GetState(), tested.GetStatus().GetMessage())
 	require.EqualValues(t, 1, tested.GetTestsPassed())
+	require.Equal(t, runtimev0.TestRunResult_PASSED, tested.GetResult().GetState())
+	require.EqualValues(t, 1, tested.GetCounts().GetPassed())
 
 	start, err := rt.Start(ctx, &runtimev0.StartRequest{})
 	require.NoError(t, err)
@@ -276,6 +278,9 @@ func TestRuntimeEndToEndRejectsDeadGateway(t *testing.T) {
 	result, err := rt.Test(probe, &runtimev0.TestRequest{})
 	require.NoError(t, err)
 	require.Equal(t, runtimev0.TestStatus_ERROR, result.GetStatus().GetState())
+	require.Equal(t, runtimev0.TestRunResult_FAILED, result.GetResult().GetState())
+	require.EqualValues(t, 1, result.GetCounts().GetFailed())
+	require.Contains(t, result.GetResult().GetMessage(), "not ready")
 	require.Contains(t, result.GetStatus().GetMessage(), "not ready")
 	require.NotContains(t, result.GetStatus().GetMessage(), "no attempt completed")
 }

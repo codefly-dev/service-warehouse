@@ -598,3 +598,64 @@ func TestDeployRequiresAuthenticationAndRendersNetworkBoundary(t *testing.T) {
 		})
 	}
 }
+
+func TestDeployRejectsAnonymousKeyFromEveryConfigurationSource(t *testing.T) {
+	const key = "SWH_ALLOW_ANONYMOUS"
+	cases := map[string]func(*Builder, *builderv0.DeploymentRequest){
+		"secret reference": func(_ *Builder, req *builderv0.DeploymentRequest) {
+			req.GetDeployment().GetKubernetes().SecretReferences[key] = &builderv0.KubernetesSecretKeyReference{Name: "override", Key: "flag"}
+		},
+		"nil secret reference": func(_ *Builder, req *builderv0.DeploymentRequest) {
+			req.GetDeployment().GetKubernetes().SecretReferences[key] = nil
+		},
+		"secret configuration": func(_ *Builder, req *builderv0.DeploymentRequest) {
+			req.Configuration = configuration(map[string]string{key: "true"})
+			req.Configuration.Infos[0].ConfigurationValues[0].Secret = true
+		},
+		"templated configuration": func(_ *Builder, req *builderv0.DeploymentRequest) {
+			req.Configuration = configuration(map[string]string{key: ""})
+			req.Configuration.Infos[0].ConfigurationValues[0].Template = &basev0.ConfigurationValueTemplate{}
+		},
+		"another group": func(_ *Builder, req *builderv0.DeploymentRequest) {
+			req.Configuration = configuration(map[string]string{key: "true"})
+			req.Configuration.Infos[0].Name = "another"
+		},
+		"dependency configuration": func(_ *Builder, req *builderv0.DeploymentRequest) {
+			req.DependenciesConfigurations = []*basev0.Configuration{configuration(map[string]string{key: "true"})}
+		},
+		"ConfigMap data via raw configuration": func(b *Builder, _ *builderv0.DeploymentRequest) {
+			require.NoError(t, b.EnvironmentVariables.AddRawConfigurations(context.Background(), configuration(map[string]string{key: "true"})))
+		},
+		"environment override": func(b *Builder, _ *builderv0.DeploymentRequest) {
+			b.EnvironmentVariables.SetOverrides(map[string]string{key: "true"})
+		},
+		"configuration carrier": func(b *Builder, _ *builderv0.DeploymentRequest) {
+			b.EnvironmentVariables.SetOverrides(map[string]string{"CODEFLY__SERVICE_CONFIGURATION__MODULE__WAREHOUSE__WAREHOUSE__" + key: "true"})
+		},
+	}
+	// Presence is prohibited: false or an unresolved/empty value must not create
+	// a second entry that can later be rebound from another delivery source.
+	for _, value := range []string{"true", "false", "", "1", "TRUE", "yes"} {
+		cases["literal "+value] = func(_ *Builder, req *builderv0.DeploymentRequest) {
+			req.Configuration = configuration(map[string]string{key: value})
+		}
+	}
+	for _, profile := range []builderv0.KubernetesOutputProfile{ephemeral, restricted} {
+		for name, prepare := range cases {
+			t.Run(profile.String()+"/"+name, func(t *testing.T) {
+				builder := newDeployBuilder(t, context.Background())
+				destination := t.TempDir()
+				req := deployRequest(destination, nil, profile)
+				prepare(builder, req)
+				response, err := builder.Deploy(context.Background(), req)
+				require.NoError(t, err)
+				require.Equal(t, builderv0.DeploymentStatus_ERROR, response.GetState().GetState())
+				require.Contains(t, response.GetState().GetMessage(), key)
+				require.Contains(t, response.GetState().GetMessage(), "key is reserved")
+				files, err := os.ReadDir(destination)
+				require.NoError(t, err)
+				require.Empty(t, files, "a forbidden key must fail before rendering")
+			})
+		}
+	}
+}

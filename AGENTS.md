@@ -32,7 +32,9 @@ this file needs a fix in the same PR.
   manifest.
 
 Deployments require an environment-managed `SWH_AUTH_TOKEN` secret reference;
-consumers bind the same key to `warehouse.token`. The templates render a
+consumers bind the same key to `warehouse.token`. Reject caller-supplied
+`SWH_ALLOW_ANONYMOUS` keys from every configuration source, even false/empty
+values; only the template may supply its single literal false. The templates render a
 same-namespace ingress NetworkPolicy. Anonymous access is only an explicit local
 gateway opt-in. README owns the secret binding procedure and policy limits.
 
@@ -121,14 +123,16 @@ output for `--- PASS`, never `ok` alone.
 
 `codefly agent ci` is the full agent conformance gate. Its workflow
 (`agent-ci.yml`) is `workflow_dispatch` only until a full run has been seen green
-here. Run `GOTOOLCHAIN=go1.27.2 codefly agent ci` from the repo root. The manifest
+here. Run `GOTOOLCHAIN=go1.27.2 codefly agent ci` from the repo root with CLI
+0.1.185, also pinned in `agent-ci.yml`. The manifest
 pins source packager `codefly.dev/go:0.0.69`, whose image recipes use immutable
 digests. The gateway build pins Go 1.27.2 by tag and image-index digest and fixes
 `GOTOOLCHAIN`; keep `go.mod`, CI and the image toolchain in sync. A fresh service
 declares `backend: mem`; Runtime.Test probes health and authenticated Capabilities
-even when Start was not called. Before the first published lock, full conformance
-still fails closed on the absent image; a passing binary audit is not full
-conformance. `codefly ci run` operates on a consuming workspace: this agent
+even when Start was not called, and returns an explicit PASSED/FAILED run result.
+Before the first published lock, set `SWH_GATEWAY_IMAGE` to a local build to
+exercise the generated-service test phase; published-image audit still refuses
+the absent digest. A passing binary audit is not full conformance. `codefly ci run` operates on a consuming workspace: this agent
 repository has no workspace manifest.
 
 Run the server locally against the zero-dependency backend — it needs no
@@ -165,6 +169,10 @@ to v0.0.2, so dispatch the image publisher with 0.0.2. `gateway-image.json` reco
 every consumer of it — the agent, `Deploy`, the release — refuses an empty one
 rather than run `:latest`. The tag must match `version:` in `agent.codefly.yaml`
 or the job fails by design.
+
+The coordinator must use an explicit squash body with `Refs #12`; commit
+`632feea` contains a closing directive that must not enter the squash message.
+Keep the issue open until the release has been verified.
 
 Core is pinned in two places that move together: the `codefly-dev/core` version
 in `go.mod` and the commit SHA of core's reusable workflows in `release.yml` and

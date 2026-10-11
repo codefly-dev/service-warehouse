@@ -8,6 +8,7 @@ import (
 
 	"github.com/codefly-dev/core/callertoken"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
 	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
@@ -127,3 +128,43 @@ func TestWaitForReadyReturnsOnCancellation(t *testing.T) {
 }
 
 func insecureCredentials() credentials.TransportCredentials { return insecure.NewCredentials() }
+
+// The CLI judges Result, not legacy Status. A successful readiness assertion
+// must not decode as UNKNOWN, and a failed assertion must report FAILED.
+func TestRuntimeTestReportsRunLevelOutcome(t *testing.T) {
+	address, health := startGateway(t, "server-token")
+	for _, tc := range []struct {
+		name           string
+		serving        healthv1.HealthCheckResponse_ServingStatus
+		want           runtimev0.TestRunResult_State
+		passed, failed int32
+	}{
+		{"serving", healthv1.HealthCheckResponse_SERVING, runtimev0.TestRunResult_PASSED, 1, 0},
+		{"not serving", healthv1.HealthCheckResponse_NOT_SERVING, runtimev0.TestRunResult_FAILED, 0, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			health.SetServingStatus("", tc.serving)
+			rt := runtimeAt(t, address, "server-token")
+			budget := 5 * time.Second
+			if tc.failed > 0 {
+				budget = 200 * time.Millisecond
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), budget)
+			defer cancel()
+			response, err := rt.Test(ctx, &runtimev0.TestRequest{})
+			require.NoError(t, err)
+			require.Equal(t, tc.want, response.GetResult().GetState())
+			require.EqualValues(t, 1, response.GetCounts().GetTotal())
+			require.Equal(t, tc.passed, response.GetCounts().GetPassed())
+			require.Equal(t, tc.failed, response.GetCounts().GetFailed())
+			require.Equal(t, tc.passed, response.GetTestsPassed())
+			require.Equal(t, tc.failed, response.GetTestsFailed())
+			if tc.failed > 0 {
+				require.Equal(t, runtimev0.TestStatus_ERROR, response.GetStatus().GetState())
+				require.Contains(t, response.GetResult().GetMessage(), "not ready")
+			} else {
+				require.Equal(t, runtimev0.TestStatus_SUCCESS, response.GetStatus().GetState())
+			}
+		})
+	}
+}

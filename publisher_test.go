@@ -13,10 +13,11 @@ import (
 )
 
 type publisherStep struct {
-	ID   string         `yaml:"id"`
-	Uses string         `yaml:"uses"`
-	Run  string         `yaml:"run"`
-	With map[string]any `yaml:"with"`
+	ID   string            `yaml:"id"`
+	Uses string            `yaml:"uses"`
+	Run  string            `yaml:"run"`
+	Env  map[string]string `yaml:"env"`
+	With map[string]any    `yaml:"with"`
 }
 
 type publisherJob struct {
@@ -116,10 +117,14 @@ func TestPublisherRefusesCommitOutsideDefaultBranch(t *testing.T) {
 	unmerged := git(dir, "rev-parse", "HEAD")
 
 	guard := publisherStepByID(t, "default-branch")
+	require.Empty(t, guard.Env, "public git reads must receive no token")
+	require.NotContains(t, guard.Run, "$GH_TOKEN")
+	require.NotContains(t, guard.Run, "$GITHUB_TOKEN")
+	require.NotContains(t, guard.Run, "extraheader")
 	run := func(sha string) (string, error) {
 		command := exec.Command("bash", "-c", guard.Run)
 		command.Dir = dir
-		command.Env = append(os.Environ(), "GH_TOKEN=fixture-only", "GITHUB_SHA="+sha, "GITHUB_REF_NAME=trunk")
+		command.Env = append(os.Environ(), "GITHUB_SHA="+sha, "GITHUB_REF_NAME=trunk")
 		out, err := command.CombinedOutput()
 		return string(out), err
 	}

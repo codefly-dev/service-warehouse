@@ -340,8 +340,22 @@ func (s *Runtime) Test(ctx context.Context, req *runtimev0.TestRequest) (*runtim
 	defer s.Wool.Catch()
 	// Conformance calls Init then Test without Start. Creating a container is
 	// not proof that it stayed alive or accepts the credential we handed out.
-	if err := s.WaitForReady(s.Wool.Inject(ctx)); err != nil {
-		return s.Runtime.TestError(err)
+	readinessErr := s.WaitForReady(s.Wool.Inject(ctx))
+	passed, failed := int32(1), int32(0)
+	state := runtimev0.TestRunResult_PASSED
+	var failures []string
+	if readinessErr != nil {
+		passed, failed = 0, 1
+		state = runtimev0.TestRunResult_FAILED
+		failures = []string{readinessErr.Error()}
 	}
-	return s.Runtime.TestResponseWithResults(1, 1, 0, 0, 0, nil, nil)
+	response, err := s.Runtime.TestResponseWithResults(1, passed, failed, 0, 0, failures, readinessErr)
+	if err != nil {
+		return nil, err
+	}
+	// CLI 0.1.185 judges the run-level verdict; legacy status/counters alone
+	// decode as UNKNOWN. Keep both representations consistent for older hosts.
+	response.Result = &runtimev0.TestRunResult{State: state, Message: response.GetStatus().GetMessage()}
+	response.Counts = &runtimev0.TestCounts{Total: 1, Passed: passed, Failed: failed}
+	return response, nil
 }

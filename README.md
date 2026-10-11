@@ -144,7 +144,10 @@ choose the engine. Newly generated services declare `backend: mem` (the
 catalog-only backend, with no query execution). Removing that setting falls back
 to the gateway's unsupported `duckdb` default and startup fails. The agent's
 `Test` step performs the same health and authenticated `Capabilities` check as
-`Start`, so conformance's Init → Test path rejects a dead gateway. The agent delivers `SWH_BACKEND`, `SWH_DATABASE`,
+`Start`, so conformance's Init → Test path rejects a dead gateway. It returns an
+explicit run-level `PASSED` or `FAILED` result and consistent counts; CLI 0.1.185
+requires that verdict rather than inferring it from legacy status fields.
+The agent delivers `SWH_BACKEND`, `SWH_DATABASE`,
 `SWH_DATASET` and `SWH_LOCATION`, and refuses `SWH_CREDENTIALS_FILE`, which
 nothing could project into the container. `SWH_GATEWAY_IMAGE` makes the agent
 run a locally built image instead of the pinned one (`docker build -t
@@ -181,8 +184,12 @@ is a namespace boundary, not a declared-consumer allowlist; same-namespace pods
 still need the token. Cross-namespace consumers require an explicit policy
 overlay. No service mesh or mTLS is installed by this agent.
 
-`SWH_ALLOW_ANONYMOUS=true` is refused in deployment configuration. A configured
-`SWH_CREDENTIALS_FILE` is also refused because nothing mounts that file: grant
+The key `SWH_ALLOW_ANONYMOUS` is reserved in deployments: any caller-supplied
+occurrence is refused, including secret references, templated/secret/plain
+configuration, raw ConfigMap data and environment overrides, even with an empty
+or `false` value. The template owns the single literal `false` entry. Core
+v0.18.1 exposes no ConfigMap-reference input; it cannot render a ConfigMap-key
+reference supplied through that API. A configured `SWH_CREDENTIALS_FILE` is also refused because nothing mounts that file: grant
 the dedicated ServiceAccount a workload identity, or supply a mount and variable
 through an external overlay. Other `SWH_*` values are bound onto the container
 by name from the environment's service configuration after the render.
@@ -244,7 +251,8 @@ denied `installation not allowed to Write organization package` when publishing
 a service package. `publish-gateway-image.yml` therefore defines the job here,
 logs in with its own `GITHUB_TOKEN` and `packages: write`, refuses unmerged
 commits before login, checks out with `persist-credentials: false`, and pushes
-by digest with no tags. Replace these local publishing steps with core 0.18.2's
+by digest with no tags. The public Git remote reads are anonymous; the branch
+check receives no token and puts no credentials in Git's command line. Replace these local publishing steps with core 0.18.2's
 composite action once core#770 is available and adopted; keep the job in this
 repository. The other core integrations remain pinned to v0.18.1.
 
@@ -252,7 +260,11 @@ The coordinator performs the following first-release sequence. The manifest's
 seed is `0.0.1`; `codefly publish` increments it, so the **first release is
 `v0.0.2`** and the image publisher must receive **`0.0.2`**.
 
-1. Merge the reviewed gateway PR after its CI is green.
+1. Squash the reviewed gateway PR after its CI is green, using an explicit
+   squash body with `Refs #12`. Commit `632feea` has a closing directive, so the
+   default concatenated commit-message body is unsafe. The squash message must
+   omit the closing keyword `closes` before issue `#12`; keep that issue open
+   through release verification.
 2. On clean, synced `main`, run `codefly publish --dry-run` and confirm
    `0.0.1` → `0.0.2`.
 3. Dispatch `publish-gateway-image` on `main` with `version=0.0.2` (no `v`).
@@ -310,9 +322,12 @@ The release-gate regression tests use `git` and `jq` (also present in CI).
 The source packager is pinned to `codefly.dev/go:0.0.69`, whose image recipes use
 immutable digests. `go.mod` and CI require Go 1.27.2; the gateway Dockerfile pins
 the Go 1.27.2 image index and sets `GOTOOLCHAIN=go1.27.2`. For local conformance,
-run `GOTOOLCHAIN=go1.27.2 codefly agent ci` so host toolchain selection is explicit.
-Before the first image lock, the agent-binary audit can pass but full generated
-service conformance still fails closed on the unpublished image.
+run `GOTOOLCHAIN=go1.27.2 codefly agent ci` with CLI **0.1.185**, as pinned in
+`agent-ci.yml`. Before the first image lock, also set
+`SWH_GATEWAY_IMAGE=service-warehouse:e2e` to a locally built image when verifying
+the generated service's test phase. This override is only for runtime and image
+SBOM testing: the audit of the service's published image still fails closed on
+the absent lock. A passing binary audit alone is not full conformance.
 
 The agent's end-to-end tests need Docker and are behind the `e2e` tag; the SBOM
 one also needs `syft` on `PATH`:

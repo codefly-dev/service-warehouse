@@ -5,6 +5,7 @@ import (
 	"embed"
 	"fmt"
 	"regexp"
+	"strings"
 
 	"github.com/codefly-dev/core/agents/communicate"
 	"github.com/codefly-dev/core/agents/services"
@@ -141,6 +142,10 @@ func (s *Builder) Deploy(ctx context.Context, req *builderv0.DeploymentRequest) 
 		return s.Builder.DeployError(err)
 	}
 
+	if err := s.rejectAnonymousDeploymentConfiguration(req); err != nil {
+		return s.Builder.DeployError(err)
+	}
+
 	parameters := &deploymentTemplateParameters{
 		Backend:       s.conf.backend,
 		Database:      s.conf.database,
@@ -195,15 +200,51 @@ func (s *Builder) Deploy(ctx context.Context, req *builderv0.DeploymentRequest) 
 	if ref.GetName() == "" || ref.GetKey() == "" {
 		return s.Builder.DeployError(fmt.Errorf("deployment requires an SWH_AUTH_TOKEN Kubernetes secret reference; bind the same secret key to consumers' warehouse.token configuration"))
 	}
-	if value, _ := resources.GetConfigurationValue(ctx, req.GetConfiguration(), configurationGroup, "SWH_ALLOW_ANONYMOUS"); value != "" && value != "false" {
-		return s.Builder.DeployError(fmt.Errorf("SWH_ALLOW_ANONYMOUS is only an explicit local gateway opt-in; deployments require authentication"))
-	}
 	return s.Builder.DeployKustomize(ctx, req, services.KustomizeDeployment{
 		EnvironmentVariables: s.EnvironmentVariables,
 		Templates:            deploymentFS,
 		Parameters:           parameters,
 		PodOverlay:           workloadPodOverlay(),
 	})
+}
+
+// rejectAnonymousDeploymentConfiguration reserves this key for the template's
+// literal false. Reject its presence, regardless of value, group or delivery
+// mechanism: a reference's value cannot be known at render time. Core v0.18.1
+// exposes secret references but no ConfigMap-reference field; raw configuration
+// and environment-manager values cover its ConfigMap/Secret data paths.
+func (s *Builder) rejectAnonymousDeploymentConfiguration(req *builderv0.DeploymentRequest) error {
+	reject := func(key string) error {
+		if key == "SWH_ALLOW_ANONYMOUS" || strings.HasSuffix(key, "__SWH_ALLOW_ANONYMOUS") {
+			return fmt.Errorf("SWH_ALLOW_ANONYMOUS is only an explicit local gateway opt-in; the key is reserved in deployments, including values and references")
+		}
+		return nil
+	}
+	for key := range req.GetDeployment().GetKubernetes().GetSecretReferences() {
+		if err := reject(key); err != nil {
+			return err
+		}
+	}
+	configurations := append([]*v0.Configuration{req.GetConfiguration()}, req.GetDependenciesConfigurations()...)
+	for _, configuration := range configurations {
+		for _, info := range configuration.GetInfos() {
+			for _, value := range info.GetConfigurationValues() {
+				if err := reject(value.GetKey()); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	values, err := s.EnvironmentVariables.All()
+	if err != nil {
+		return err
+	}
+	for _, value := range values {
+		if err := reject(value.Key); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // servicePort is the port the rendered Service publishes for the gRPC endpoint:
