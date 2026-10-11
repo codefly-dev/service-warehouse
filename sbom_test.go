@@ -224,7 +224,7 @@ func TestReleaseEvidenceComesFromTheSharedCommand(t *testing.T) {
 	require.Contains(t, body, "cmd/image-sbom", "the release workflow does not generate evidence through cmd/image-sbom")
 	require.NotContains(t, body, "for platform in", "the release workflow loops over its own platform list")
 	require.NotContains(t, workflowBody(t, "publish-gateway-image.yml"), "for platform in",
-		"the publish workflow loops over its own platform list; the platforms it builds are read from its build-push step")
+		"the publish workflow loops over its own platform list; the platforms it builds are read from the platforms it hands core's publisher")
 }
 
 // expectedFromReleasePipeline builds the coverage expectation from the publish
@@ -244,7 +244,10 @@ func expectedFromReleasePipeline(t *testing.T, reference string) []*builderv0.Im
 	return expected
 }
 
-// publishedPlatforms reads the actual build step in this repository's publisher.
+// publishedPlatforms reads the platforms this repository's publisher asks core's
+// composite action to build. The action defaults them, and the publisher states
+// them anyway: a default is a value this repository would stop declaring, and a
+// new core pin could then change what ships without failing here.
 func publishedPlatforms(t *testing.T) []string {
 	t.Helper()
 	var workflow struct {
@@ -261,7 +264,7 @@ func publishedPlatforms(t *testing.T) []string {
 	var published []string
 	for _, job := range workflow.Jobs {
 		for _, step := range job.Steps {
-			if !strings.HasPrefix(step.Uses, "docker/build-push-action@") {
+			if !strings.HasPrefix(step.Uses, corePublisher) {
 				continue
 			}
 			for _, platform := range strings.Split(step.With.Platforms, ",") {

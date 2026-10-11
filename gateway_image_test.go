@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path"
 	"regexp"
 	"strings"
 	"testing"
@@ -130,8 +131,11 @@ func TestGatewayImageNameIsThisRepository(t *testing.T) {
 	require.Contains(t, string(lock), `"name": "ghcr.io/`+repository+`"`)
 
 	require.Contains(t, workflowBody(t, "release.yml"), "IMAGE: ghcr.io/${{ github.repository }}")
-	// The in-repository publisher derives the image name from this repository.
-	require.Contains(t, workflowBody(t, "publish-gateway-image.yml"), "REPOSITORY: ${{ github.repository }}")
+	// Core's publisher derives the name from the repository the job runs in,
+	// inside resources.ImageRegistry, so the publisher names no image at all.
+	// TestPublisherDoesNotRenameTheImage holds the absence of an override.
+	require.Equal(t, resources.ImageRegistry, "ghcr.io/"+path.Dir(repository),
+		"core publishes into a registry other than the one this repository's image lives in")
 }
 
 // The container port is stated once in the agent and handed to the gateway as

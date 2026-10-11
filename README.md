@@ -188,7 +188,7 @@ The key `SWH_ALLOW_ANONYMOUS` is reserved in deployments: any caller-supplied
 occurrence is refused, including secret references, templated/secret/plain
 configuration, raw ConfigMap data and environment overrides, even with an empty
 or `false` value. The template owns the single literal `false` entry. Core
-v0.18.1 exposes no ConfigMap-reference input; it cannot render a ConfigMap-key
+v0.18.3 exposes no ConfigMap-reference input; it cannot render a ConfigMap-key
 reference supplied through that API. A configured `SWH_CREDENTIALS_FILE` is also refused because nothing mounts that file: grant
 the dedicated ServiceAccount a workload identity, or supply a mount and variable
 through an external overlay. Other `SWH_*` values are bound onto the container
@@ -232,7 +232,8 @@ against core's `sbom.ValidateCoverage`.
 [`cmd/service-warehouse/distribution_test.go`](cmd/service-warehouse/distribution_test.go)
 gates this. It lists every path that builds an image (a Dockerfile, an
 `agent.codefly.yaml`, a compose file, a workflow running
-`docker build`/`docker buildx`/`docker/build-push-action`) or deploys one (a
+`docker build`/`docker buildx`/`docker/build-push-action`, or calling core's
+shared `publish-service-image`) or deploys one (a
 Kubernetes manifest, Helm values, a Kustomize overlay naming an image), and fails
 on any that is not accounted for, or on one that stopped producing its signal,
 or when the tests holding the evidence are gone. A second image therefore has to
@@ -245,16 +246,29 @@ image is built.
 
 ### Releasing
 
-**Publisher stopgap pending [core#770](https://github.com/codefly-dev/core/issues/770):**
-GHCR checks the workflow's defining repository. Core's reusable publisher was
-denied `installation not allowed to Write organization package` when publishing
-a service package. `publish-gateway-image.yml` therefore defines the job here,
-logs in with its own `GITHUB_TOKEN` and `packages: write`, refuses unmerged
-commits before login, checks out with `persist-credentials: false`, and pushes
-by digest with no tags. The public Git remote reads are anonymous; the branch
-check receives no token and puts no credentials in Git's command line. Replace these local publishing steps with core 0.18.2's
-composite action once core#770 is available and adopted; keep the job in this
-repository. The other core integrations remain pinned to v0.18.1.
+**Who publishes the image.** GHCR checks the workflow's defining repository, so
+the publishing *job* cannot move to core: core's reusable publisher was denied
+`installation not allowed to Write organization package` when writing a service
+package, and core removed it. `publish-gateway-image.yml` therefore keeps the
+job here — the `workflow_dispatch` gate, `packages: write`, the 30-minute
+timeout and the checkout — and the publishing *steps* are core's shared
+composite action [`publish-service-image`][publisher], called as a step inside
+that job and pinned to the core commit `go.mod` requires. The action logs in
+with this job's own `GITHUB_TOKEN`, builds the committed `Dockerfile` with the
+repository root as context, and pushes by digest with no tags. Before login or
+build it refuses an event other than `workflow_dispatch`, a commit not reachable
+from the remote's own default branch, a `HEAD` that is not the triggering commit,
+a tree with any modified, staged, untracked or ignored file, and local Git config
+carrying credentials — which is why the checkout uses `persist-credentials: false`
+and full history, and why nothing but the cgo cross-build emulator runs ahead of
+it. `registry-token` is the one place this job's token goes.
+
+The emulator (`docker/setup-qemu-action`) stays in this repository: the gateway
+is a cgo build, so the `linux/arm64` stage runs an arm64 toolchain rather than
+cross-compiling, and the action sets up buildx but installs no binfmt handler.
+It is the only step before the action, it runs no code from this repository and
+writes nothing into the checkout, so the action's guard still covers the tree it
+builds.
 
 The coordinator performs the following first-release sequence. The manifest's
 seed is `0.0.1`; `codefly publish` increments it, so the **first release is
@@ -268,10 +282,12 @@ seed is `0.0.1`; `codefly publish` increments it, so the **first release is
 2. On clean, synced `main`, run `codefly publish --dry-run` and confirm
    `0.0.1` → `0.0.2`.
 3. Dispatch `publish-gateway-image` on `main` with `version=0.0.2` (no `v`).
-   The in-repository publisher pushes by digest and records `gateway-image.json`
-   in the `gateway-image-lock-0.0.2` artifact and run summary. It uses
-   `persist-credentials: false` and refuses a commit outside the default branch's
-   history.
+   It pushes by digest and writes `gateway-image.json`, which core's action
+   uploads as the artifact **`gateway-image.json-0.0.2`** — `<lock-file>-<version>`,
+   not the `gateway-image-lock-<version>` the in-repository publisher used — and
+   prints in the run summary. The run's `digest` and compact `lock` are also job
+   outputs. A dispatch on any other branch is refused at the ancestry check
+   before registry login; so is a dirty or ref-overridden checkout.
 4. Make the new `ghcr.io/codefly-dev/service-warehouse` package **public** in
    GitHub package settings. Verify an anonymous pull by the returned digest
    using a fresh Docker configuration with no registry login.
@@ -298,13 +314,18 @@ claiming otherwise. This agent PR references #12; it does not close it.
 
 The lock is parsed by core's `resources.ParseImageLock`: it must name
 `ghcr.io/codefly-dev/service-warehouse`, contain only `name` and `digest`, and
-use `sha256:` followed by 64 lowercase hex characters. An empty digest records
+use `sha256:` followed by 64 lowercase hex characters. The action records
+whatever digest the build returned without checking that shape itself — the
+in-repository publisher used to — so the check that matters is the one on the
+commit: `go test ./...` parses the committed lock on every pull request, and CI
+then inventories the digest it names. An empty digest records
 an unpublished image and is refused by the agent and release. CI permits the
 initial empty lock only with complete history, no `v*` tag, and no prior nonempty
 lock in fetched history. Clearing an established lock fails CI even before the
 first tag.
 
-[sbom]: https://github.com/codefly-dev/core/blob/v0.18.1/docs/sbom.md
+[sbom]: https://github.com/codefly-dev/core/blob/v0.18.3/docs/sbom.md
+[publisher]: https://github.com/codefly-dev/core/blob/v0.18.3/.github/actions/publish-service-image/action.yml
 
 ## Develop
 

@@ -174,13 +174,18 @@ The coordinator must use an explicit squash body with `Refs #12`; commit
 `632feea` contains a closing directive that must not enter the squash message.
 Keep the issue open until the release has been verified.
 
-Core is pinned in two places that move together: the `codefly-dev/core` version
-in `go.mod` and the commit SHA of core's reusable workflows in `release.yml` and
-`agent-ci.yml` (never `@main`: `release.yml` passes `secrets: inherit`). The image
-publisher is an explicitly labelled stopgap pending
-[core#770](https://github.com/codefly-dev/core/issues/770), the core 0.18.2 composite
-action: its job must stay in this repository so GHCR accepts its own job token.
-Do not restore the reusable publisher call; README owns the transition procedure.
+Core is pinned in four places that move together: the `codefly-dev/core` version
+in `go.mod` and one commit SHA in `release.yml`, `agent-ci.yml` and
+`publish-gateway-image.yml` (never `@main`: `release.yml` passes
+`secrets: inherit`). Each pin carries a `# vX.Y.Z` comment naming the core
+release, and `TestCorePinsAreOneImmutableCommitMatchingGoMod` holds all four to
+one commit and one version, so bumping `go.mod` alone fails. The image
+publisher's *steps* are core's `publish-service-image` composite action, but its
+*job* must stay in this repository so GHCR accepts its own job token — do not
+restore the reusable publisher call, and do not reintroduce local build, login
+or upload steps beside the action. The cgo cross-build emulator is the one step
+that may precede it, because the action installs no binfmt handler. README owns
+the dispatch procedure and the artifact name the action emits.
 
 ## Where the depth is
 

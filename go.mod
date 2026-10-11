@@ -3,7 +3,7 @@ module github.com/codefly-dev/service-warehouse
 go 1.27.2
 
 require (
-	github.com/codefly-dev/core v0.18.1
+	github.com/codefly-dev/core v0.18.3
 	github.com/stretchr/testify v1.12.1
 	google.golang.org/grpc v1.83.2
 	google.golang.org/protobuf v1.36.12
