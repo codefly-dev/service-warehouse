@@ -159,3 +159,23 @@ jobs:
     # reachable from the default branch.
     uses: codefly-dev/core/.github/workflows/go-service-release.yml@ea49e7a968ef5f2fd325b1c41f823a47eb20141c
     secrets: inherit
+
+  # Workflow artifacts expire. Copy the digest-bound documents and index onto
+  # the release after GoReleaser has created it; retries replace the same assets.
+  attach-image-evidence:
+    needs: [gateway-image, release]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: gateway-image-sbom-*
+          merge-multiple: true
+          path: sbom
+      - name: Attach image SBOMs and index to the GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release upload "$GITHUB_REF_NAME" sbom/* --repo "$GITHUB_REPOSITORY" --clobber

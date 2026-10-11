@@ -65,12 +65,19 @@ func TestRuntimeEndToEnd(t *testing.T) {
 	init, err := rt.Init(ctx, &runtimev0.InitRequest{
 		RuntimeContext:          runtimeContext,
 		ProposedNetworkMappings: networkMappings,
-		Configuration:           configuration(map[string]string{"SWH_BACKEND": "mem"}),
 	})
 	require.NoError(t, err)
 	// Init reports a lifecycle failure in its status, not as a returned error:
 	// the contract hands the CLI a diagnostic rather than a transport fault.
 	require.Equal(t, runtimev0.InitStatus_READY, init.GetStatus().GetState(), init.GetStatus().GetMessage())
+
+	// This is the conformance lifecycle: Create → Load → Init → Test, no Start
+	// and no backend override. It must exercise the generated service defaults.
+	require.Equal(t, "mem", rt.Settings.Backend)
+	tested, err := rt.Test(ctx, &runtimev0.TestRequest{})
+	require.NoError(t, err)
+	require.Equal(t, runtimev0.TestStatus_SUCCESS, tested.GetStatus().GetState(), tested.GetStatus().GetMessage())
+	require.EqualValues(t, 1, tested.GetTestsPassed())
 
 	start, err := rt.Start(ctx, &runtimev0.StartRequest{})
 	require.NoError(t, err)
@@ -245,4 +252,30 @@ func requirePublishedOnAllInterfaces(t *testing.T, containerID string, container
 	require.NotEmpty(t, hostIPs, "container port %d has no published host binding", containerPort)
 	require.NotContains(t, hostIPs, "127.0.0.1", "container port %d must not be published loopback-only", containerPort)
 	require.Contains(t, hostIPs, "0.0.0.0", "container port %d must publish on all interfaces", containerPort)
+}
+
+// A gateway can die after Init returns. Test must reject that dead gateway
+// even though container creation succeeded and Start was never called.
+func TestRuntimeEndToEndRejectsDeadGateway(t *testing.T) {
+	if os.Getenv(gatewayImageOverrideEnv) == "" {
+		t.Skipf("set %s to a locally built gateway image", gatewayImageOverrideEnv)
+	}
+	ctx := context.Background()
+	rt, mappings, runtimeContext := loadedRuntime(t, ctx)
+	t.Cleanup(func() { _, _ = rt.Destroy(context.Background(), &runtimev0.DestroyRequest{}) })
+	init, err := rt.Init(ctx, &runtimev0.InitRequest{
+		RuntimeContext: runtimeContext, ProposedNetworkMappings: mappings,
+	})
+	require.NoError(t, err)
+	require.Equal(t, runtimev0.InitStatus_READY, init.GetStatus().GetState(), init.GetStatus().GetMessage())
+	id, err := rt.gatewayEnv.ContainerID()
+	require.NoError(t, err)
+	require.NoError(t, exec.Command("docker", "stop", id).Run())
+	probe, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	result, err := rt.Test(probe, &runtimev0.TestRequest{})
+	require.NoError(t, err)
+	require.Equal(t, runtimev0.TestStatus_ERROR, result.GetStatus().GetState())
+	require.Contains(t, result.GetStatus().GetMessage(), "not ready")
+	require.NotContains(t, result.GetStatus().GetMessage(), "no attempt completed")
 }

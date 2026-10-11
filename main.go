@@ -48,9 +48,9 @@ const configurationGroup = "warehouse"
 // runtime configuration (an environment's values) takes precedence. Credentials
 // are never settings: they arrive as runtime configuration, never here.
 type Settings struct {
-	// Backend selects the warehouse. Empty leaves the choice to the gateway,
-	// whose default is the embedded engine. A deployed environment names a cloud
-	// warehouse.
+	// Backend selects the warehouse. Create defaults new services to mem, the
+	// catalog-only backend. An explicitly empty setting uses the gateway's
+	// default, currently the unsupported DuckDB skeleton.
 	Backend string `yaml:"backend"`
 	// Database is the database the gateway is bound to (a BigQuery project, a
 	// Snowflake or Redshift database, an embedded engine's file).

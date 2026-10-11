@@ -17,6 +17,6 @@ jobs:
     # v0.18.1, the release go.mod requires. Bump the two together.
     uses: codefly-dev/core/.github/workflows/agent-ci.yml@ea49e7a968ef5f2fd325b1c41f823a47eb20141c
     with:
-      # The CLI release the gate runs with. The go source-packager it installs
-      # is the one the CLI pins, so bumping this is how that pin moves.
+      # The CLI release the gate runs with. agent.codefly.yaml selects the
+      # source-packager version (0.0.69); go.mod selects Go 1.27.2.
       codefly-cli-version: "0.1.181"

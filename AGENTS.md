@@ -31,6 +31,11 @@ this file needs a fix in the same PR.
   starts the gateway, hands out the one token it enforces, and renders the
   manifest.
 
+Deployments require an environment-managed `SWH_AUTH_TOKEN` secret reference;
+consumers bind the same key to `warehouse.token`. The templates render a
+same-namespace ingress NetworkPolicy. Anonymous access is only an explicit local
+gateway opt-in. README owns the secret binding procedure and policy limits.
+
 Three rules follow from that:
 
 1. **The API is the honest intersection.** An operation goes into the uniform
@@ -91,7 +96,7 @@ preferences; each is a rule an agent broke at real cost.
 Derived from [`.github/workflows/ci.yml`](.github/workflows/ci.yml): the
 `build-test` job is those three commands, so a green local run of all three is
 the definition of done. CI pins the Go version as a literal in that workflow
-(`go-version: "1.27.0"`) rather than reading `go.mod`, so bumping `go.mod`
+(`go-version: "1.27.2"`) rather than reading `go.mod`, so bumping `go.mod`
 alone moves your toolchain and not CI's — change both.
 
 ```sh
@@ -116,9 +121,15 @@ output for `--- PASS`, never `ok` alone.
 
 `codefly agent ci` is the full agent conformance gate. Its workflow
 (`agent-ci.yml`) is `workflow_dispatch` only until a full run has been seen green
-here. Run it from the repo root; packaging needs Docker and access to the source
-packager's toolchain downloads. `codefly ci run` instead operates on a consuming
-workspace: this agent repository has no workspace manifest.
+here. Run `GOTOOLCHAIN=go1.27.2 codefly agent ci` from the repo root. The manifest
+pins source packager `codefly.dev/go:0.0.69`, whose image recipes use immutable
+digests. The gateway build pins Go 1.27.2 by tag and image-index digest and fixes
+`GOTOOLCHAIN`; keep `go.mod`, CI and the image toolchain in sync. A fresh service
+declares `backend: mem`; Runtime.Test probes health and authenticated Capabilities
+even when Start was not called. Before the first published lock, full conformance
+still fails closed on the absent image; a passing binary audit is not full
+conformance. `codefly ci run` operates on a consuming workspace: this agent
+repository has no workspace manifest.
 
 Run the server locally against the zero-dependency backend — it needs no
 database, no warehouse credential, and no network. It still refuses an
@@ -148,8 +159,9 @@ it — you changed your toolchain, not the contract.
 A `v*` tag publishes the gateway image's tags first and the agent binary second,
 from one workflow, in that order. The image itself is published *before* the
 tag, because the agent pins its digest and a digest cannot be recorded in a
-commit the tag was already cut from; `README.md` ("Releasing") has the four
-steps. `gateway-image.json` records no digest until the first image exists, and
+commit the tag was already cut from; `README.md` ("Releasing") has the nine
+first-release steps. The manifest seed is 0.0.1; publish bumps the first release
+to v0.0.2, so dispatch the image publisher with 0.0.2. `gateway-image.json` records no digest until the first image exists, and
 every consumer of it — the agent, `Deploy`, the release — refuses an empty one
 rather than run `:latest`. The tag must match `version:` in `agent.codefly.yaml`
 or the job fails by design.

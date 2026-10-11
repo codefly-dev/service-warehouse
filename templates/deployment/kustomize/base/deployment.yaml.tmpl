@@ -62,17 +62,15 @@ spec:
             - name: SWH_LOCATION
               value: "{{ .Deployment.Parameters.Location }}"
 {{- end }}
-            # The gateway refuses to start on an unauthenticated listener unless
-            # this is set. In the deployed profile caller identity is enforced by
-            # the cluster — NetworkPolicy plus service-mesh mTLS in front of this
-            # ClusterIP — not by the gateway.
-            #
-            # Do not replace this with SWH_AUTH_TOKEN on its own. The gateway
-            # would then enforce a credential its consumers do not have, because
-            # nothing delivers that secret to their warehouse configuration. Both
-            # halves have to land together; see README "Authentication".
             - name: SWH_ALLOW_ANONYMOUS
-              value: "true"
+              value: "false"
+{{- range $key, $ref := .Deployment.SecretReferences }}
+            - name: {{ $key }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $ref.Name }}
+                  key: {{ $ref.Key }}
+{{- end }}
 {{- /* No SWH_CREDENTIALS_FILE: nothing here mounts a credentials file, so a path
 would name a file the pod does not have. A deployed cloud warehouse authenticates
 through a workload identity bound to the ServiceAccount below, or through a file

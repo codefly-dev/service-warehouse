@@ -213,11 +213,7 @@ func TestDeploymentTemplates(t *testing.T) {
 				require.Equal(t, want, env[key])
 			}
 			require.Equal(t, ":9465", env["SWH_LISTEN"])
-			// The gateway refuses an unauthenticated listener unless the manifest
-			// says so, so a deployment that stops emitting this opt-out without
-			// also delivering SWH_AUTH_TOKEN would crash-loop.
-			require.Equal(t, "true", env["SWH_ALLOW_ANONYMOUS"], "the deployed profile must declare its unauthenticated listener")
-			require.NotContains(t, env, "SWH_AUTH_TOKEN", "the manifest must not carry the gateway credential")
+			require.Equal(t, "false", env["SWH_ALLOW_ANONYMOUS"])
 			// No rendering names a credentials path: nothing in this manifest
 			// mounts one, so an emitted path would point at a file the pod does
 			// not have. Deploy rejects a configured path instead. Matched on the
@@ -312,6 +308,9 @@ func deployRequest(destination string, values map[string]string, profile builder
 				Namespace:   "codefly",
 				Destination: destination,
 				Profile:     profile,
+				SecretReferences: map[string]*builderv0.KubernetesSecretKeyReference{
+					"SWH_AUTH_TOKEN": {Name: "warehouse-auth", Key: "token"},
+				},
 			},
 		}},
 		Configuration: configuration(values),
@@ -380,11 +379,12 @@ func TestDeployRefusesWhatItHasNoWayToDeliver(t *testing.T) {
 		want   string
 	}{
 		"a credentials file nothing mounts": {map[string]string{"SWH_CREDENTIALS_FILE": "/keys/sa.json"}, "SWH_CREDENTIALS_FILE cannot be delivered"},
-		"a token the consumers would lack":  {map[string]string{"SWH_AUTH_TOKEN": "pinned"}, "SWH_AUTH_TOKEN cannot be delivered"},
+		"a literal token":                   {map[string]string{"SWH_AUTH_TOKEN": "pinned"}, "SWH_AUTH_TOKEN must be delivered as a Kubernetes secret reference"},
 		"a value that would write the manifest": {
 			map[string]string{"SWH_DATASET": "x\"\n          - name: SWH_AUTH_TOKEN"}, "SWH_DATASET",
 		},
-		"a templating action": {map[string]string{"SWH_DATABASE": "{{ .Image }}"}, "SWH_DATABASE"},
+		"anonymous deployment": {map[string]string{"SWH_ALLOW_ANONYMOUS": "true"}, "only an explicit local"},
+		"a templating action":  {map[string]string{"SWH_DATABASE": "{{ .Image }}"}, "SWH_DATABASE"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			builder := newDeployBuilder(t, ctx)
@@ -543,4 +543,58 @@ func TestCreateEndpointsDeclaresAnInternalGRPCEndpoint(t *testing.T) {
 	require.Equal(t, standards.GRPC, endpoint.GetApi())
 	require.Equal(t, resources.VisibilityInternal, endpoint.GetVisibility())
 	require.True(t, strings.HasPrefix(endpoint.GetService(), "warehouse"), endpoint.GetService())
+}
+
+// Both output profiles use the same external secret, so a portable rendering
+// never needs a plaintext credential. Consumers reference that key as well.
+func TestDeployRequiresAuthenticationAndRendersNetworkBoundary(t *testing.T) {
+	for _, profile := range []builderv0.KubernetesOutputProfile{ephemeral, restricted} {
+		t.Run(profile.String(), func(t *testing.T) {
+			ctx := context.Background()
+			builder := newDeployBuilder(t, ctx)
+			destination := t.TempDir()
+			req := deployRequest(destination, nil, profile)
+			req.GetDeployment().GetKubernetes().SecretReferences = nil
+			resp, err := builder.Deploy(ctx, req)
+			require.NoError(t, err)
+			require.Equal(t, builderv0.DeploymentStatus_ERROR, resp.GetState().GetState())
+			require.Contains(t, resp.GetState().GetMessage(), "requires an SWH_AUTH_TOKEN Kubernetes secret reference")
+			entries, err := os.ReadDir(destination)
+			require.NoError(t, err)
+			require.Empty(t, entries)
+
+			req = deployRequest(destination, nil, profile)
+			resp, err = builder.Deploy(ctx, req)
+			require.NoError(t, err)
+			require.Equal(t, builderv0.DeploymentStatus_SUCCESS, resp.GetState().GetState(), resp.GetState().GetMessage())
+			var deployment map[string]any
+			require.NoError(t, yaml.Unmarshal([]byte(renderedDeployment(t, destination)), &deployment))
+			container := deployment["spec"].(map[string]any)["template"].(map[string]any)["spec"].(map[string]any)["containers"].([]any)[0].(map[string]any)
+			found := false
+			for _, raw := range container["env"].([]any) {
+				env := raw.(map[string]any)
+				if env["name"] == "SWH_AUTH_TOKEN" {
+					found = true
+					require.NotContains(t, env, "value")
+					require.Equal(t, map[string]any{"secretKeyRef": map[string]any{"name": "warehouse-auth", "key": "token"}}, env["valueFrom"])
+				}
+			}
+			require.True(t, found)
+			body, err := os.ReadFile(filepath.Join(destination, "base", "networkpolicy.yaml"))
+			require.NoError(t, err)
+			var policy map[string]any
+			require.NoError(t, yaml.Unmarshal(body, &policy))
+			require.Equal(t, "NetworkPolicy", policy["kind"])
+			spec := policy["spec"].(map[string]any)
+			require.Equal(t, map[string]any{"matchLabels": map[string]any{"app": "warehouse"}}, spec["podSelector"])
+			require.Equal(t, []any{"Ingress"}, spec["policyTypes"])
+			ingress := spec["ingress"].([]any)
+			require.Len(t, ingress, 1)
+			require.Equal(t, []any{map[string]any{"podSelector": map[string]any{}}}, ingress[0].(map[string]any)["from"])
+			require.Equal(t, []any{map[string]any{"protocol": "TCP", "port": gatewayContainerPort}}, ingress[0].(map[string]any)["ports"])
+			kustomization, err := os.ReadFile(filepath.Join(destination, "base", "kustomization.yaml"))
+			require.NoError(t, err)
+			require.Contains(t, string(kustomization), "networkpolicy.yaml")
+		})
+	}
 }

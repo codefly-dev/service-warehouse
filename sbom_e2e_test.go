@@ -65,14 +65,17 @@ func TestImageSBOMInventoriesTheGatewayImage(t *testing.T) {
 	require.NotEmpty(t, evidence.GetSha256(), "evidence carries no document checksum")
 
 	var goModules, osPackages int
+	var libc bool
 	for _, component := range evidence.GetBom().GetComponents() {
 		switch purl := component.GetPurl(); {
 		case strings.HasPrefix(purl, "pkg:golang/"):
 			goModules++
 		case isOSPackage(purl):
 			osPackages++
+			libc = libc || strings.HasPrefix(purl, "pkg:deb/debian/libc6@")
 		}
 	}
+	require.True(t, libc, "inventory must contain Debian libc6: the gateway dynamically links glibc")
 	require.NotZero(t, goModules, "inventory found no Go modules: the gateway's application dependencies are missing")
 	require.NotZero(t, osPackages, "inventory found no OS packages: an image inventory is not satisfied by application dependencies alone")
 	t.Logf("inventoried %s on %s (%d Go modules, %d OS packages)", evidence.GetDigest(), evidence.GetPlatform(), goModules, osPackages)

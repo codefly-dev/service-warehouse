@@ -1,12 +1,17 @@
 # warehouse
 
-The warehouse gateway: a codefly/warehouse/v0 gRPC service in front of a SQL
-warehouse. The backend is selected by configuration: the embedded engine
-locally, a cloud warehouse when deployed.
+The warehouse gateway is a codefly/warehouse/v0 gRPC service in front of a SQL
+warehouse. A generated service declares `backend: mem`, the catalog-only backend
+that needs no warehouse credentials. Set `backend` in service.codefly.yaml to
+choose another engine; removing it falls back to the unsupported DuckDB skeleton.
+See https://github.com/codefly-dev/service-warehouse for current backend support.
 
-A local run starts the published gateway image with a fresh shared secret and
-hands it to consumers as the secret `token` value of the `warehouse`
-configuration group. Set `backend` in service.codefly.yaml to choose the engine;
-left unset, the gateway's own default applies. See
-https://github.com/codefly-dev/service-warehouse for the backends that serve
-queries today.
+A local run starts the gateway image with a fresh shared secret and hands it to
+consumers as the secret `token` value of the `warehouse` configuration group.
+Both Start and Test wait for health and authenticated Capabilities.
+
+Deployment requires an environment-managed Kubernetes secret reference for
+SWH_AUTH_TOKEN. Bind the same secret key to each consumer's warehouse.token
+configuration. The agent renders a same-namespace ingress NetworkPolicy and a
+dedicated ServiceAccount; a policy-capable CNI is required. See the repository
+README for both secret bindings and workload-identity setup.

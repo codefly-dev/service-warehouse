@@ -186,16 +186,17 @@ func (s *Builder) Deploy(ctx context.Context, req *builderv0.DeploymentRequest) 
 			"or mount the file from an overlay of your own and patch SWH_CREDENTIALS_FILE onto the container there",
 			s.conf.credentialsFile))
 	}
-	// A configured gateway token cannot be honored by this deployment: the
-	// manifest carries no secret values, and CreateConnectionConfiguration only
-	// emits a token the Runtime generated, so consumers would receive none.
-	// Accepting it would render a manifest that either crash-loops the gateway or,
-	// worse, starts a gateway enforcing a credential every consumer lacks. Reject
-	// it where the manifest is owned.
+	// Deployment credentials are provided by the environment's secret store,
+	// never embedded in manifests. Consumers bind the same key to warehouse.token.
 	if s.conf.authToken != "" {
-		return s.Builder.DeployError(fmt.Errorf("SWH_AUTH_TOKEN cannot be delivered by this deployment: " +
-			"the emitted Secret carries no configuration values and consumers would receive no credential; " +
-			"caller identity in the deployed profile is enforced by the cluster (NetworkPolicy and service-mesh mTLS)"))
+		return s.Builder.DeployError(fmt.Errorf("SWH_AUTH_TOKEN must be delivered as a Kubernetes secret reference, not a literal configuration value"))
+	}
+	ref := req.GetDeployment().GetKubernetes().GetSecretReferences()["SWH_AUTH_TOKEN"]
+	if ref.GetName() == "" || ref.GetKey() == "" {
+		return s.Builder.DeployError(fmt.Errorf("deployment requires an SWH_AUTH_TOKEN Kubernetes secret reference; bind the same secret key to consumers' warehouse.token configuration"))
+	}
+	if value, _ := resources.GetConfigurationValue(ctx, req.GetConfiguration(), configurationGroup, "SWH_ALLOW_ANONYMOUS"); value != "" && value != "false" {
+		return s.Builder.DeployError(fmt.Errorf("SWH_ALLOW_ANONYMOUS is only an explicit local gateway opt-in; deployments require authentication"))
 	}
 	return s.Builder.DeployKustomize(ctx, req, services.KustomizeDeployment{
 		EnvironmentVariables: s.EnvironmentVariables,
@@ -253,6 +254,9 @@ func workloadPodOverlay() *services.PodTemplateOverlay {
 
 func (s *Builder) Create(ctx context.Context, req *builderv0.CreateRequest) (*builderv0.CreateResponse, error) {
 	defer s.Wool.Catch()
+	if s.Settings.Backend == "" {
+		s.Settings.Backend = "mem"
+	}
 	if err := s.Templates(ctx, s.Information, services.WithFactory(factoryFS)); err != nil {
 		return s.Builder.CreateError(err)
 	}

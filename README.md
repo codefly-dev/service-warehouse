@@ -102,8 +102,8 @@ The server holds the warehouse credentials and runs SQL against the database it
 is bound to, and the listen address says nothing about who can reach it. So it
 **refuses to start on an unauthenticated listener** unless the operator says
 otherwise: `SWH_AUTH_TOKEN` must be set, or `SWH_ALLOW_ANONYMOUS` must be `true`
-(for a listener confined to a private boundary enforced elsewhere, such as a
-cluster NetworkPolicy or service-mesh mTLS).
+as an explicit local-development opt-in. The generated deployment requires
+authentication and never enables anonymous access.
 
 With `SWH_AUTH_TOKEN` set, every RPC — unary and streaming, `Capabilities`
 included — must carry the secret as the `x-codefly-token` gRPC metadata header,
@@ -140,24 +140,52 @@ port, waits until the gateway reports itself serving *and* accepts the agent's
 token, and hands the endpoint and token to consumers. That wait attests the
 process and the credential, not the warehouse: the gateway does not probe its
 backend and no RPC reports that. Set `backend:` in `service.codefly.yaml` to
-choose the engine; left unset, the gateway's own default applies, which today is
-`duckdb` and refuses to start, so a local run presently needs `backend: mem`
-(the catalog-only backend). The agent delivers `SWH_BACKEND`, `SWH_DATABASE`,
+choose the engine. Newly generated services declare `backend: mem` (the
+catalog-only backend, with no query execution). Removing that setting falls back
+to the gateway's unsupported `duckdb` default and startup fails. The agent's
+`Test` step performs the same health and authenticated `Capabilities` check as
+`Start`, so conformance's Init → Test path rejects a dead gateway. The agent delivers `SWH_BACKEND`, `SWH_DATABASE`,
 `SWH_DATASET` and `SWH_LOCATION`, and refuses `SWH_CREDENTIALS_FILE`, which
 nothing could project into the container. `SWH_GATEWAY_IMAGE` makes the agent
 run a locally built image instead of the pinned one (`docker build -t
 service-warehouse:local .`); it configures the agent, not the gateway.
 
-**Deployed** the agent renders a Deployment, Service and its own ServiceAccount
-(so a cloud warehouse can grant exactly this workload through a workload
-identity), with gRPC health probes on the gateway's overall service. The
-deployed listener is `SWH_ALLOW_ANONYMOUS=true`: caller identity is enforced by
-the cluster (NetworkPolicy and service-mesh mTLS), because nothing delivers a
-secret to the consumers' `warehouse` configuration for a deployment. A configured
-`SWH_AUTH_TOKEN` or `SWH_CREDENTIALS_FILE` is therefore refused rather than
-rendered, and so is a value the manifest cannot carry. The rest of the `SWH_*`
-surface reaches the gateway by the environment's service configuration being
-bound onto the container by name, after the render.
+**Deployed** the agent renders a Deployment, Service, dedicated ServiceAccount
+and NetworkPolicy, with gRPC health probes on the gateway's overall service.
+The listener requires a token. Supply `SWH_AUTH_TOKEN` through the deployment's
+Kubernetes `secret_references`, referencing a secret provisioned by the
+environment's secret manager; plaintext tokens in deployment requests are
+refused. Both ephemeral and restricted output profiles use `secretKeyRef`:
+
+```yaml
+secret_references:
+  SWH_AUTH_TOKEN:
+    name: warehouse-auth
+    key: token
+```
+
+Provision a random 64-character hex token once per environment and bind **the
+same secret key** to each consumer's `warehouse.token` secret configuration.
+For a consumer that uses Codefly's configuration carriers, its secret-reference
+map names `CODEFLY__SERVICE_SECRET_CONFIGURATION__<MODULE>__<SERVICE>__WAREHOUSE__TOKEN`
+(the warehouse producer's module and service, uppercased) and points to that
+same `warehouse-auth` / `token` key. No token is embedded in an endpoint or
+manifest. The agent does not create or rotate deployed secrets, or automatically
+copy secret references between services: the environment owns both bindings.
+An absent secret prevents pod startup; an absent or wrong consumer token is
+rejected before any SQL reaches the backend.
+
+The NetworkPolicy allows TCP ingress to the gateway port from pods in its own
+namespace only. Enforcement requires a CNI that implements NetworkPolicy. This
+is a namespace boundary, not a declared-consumer allowlist; same-namespace pods
+still need the token. Cross-namespace consumers require an explicit policy
+overlay. No service mesh or mTLS is installed by this agent.
+
+`SWH_ALLOW_ANONYMOUS=true` is refused in deployment configuration. A configured
+`SWH_CREDENTIALS_FILE` is also refused because nothing mounts that file: grant
+the dedicated ServiceAccount a workload identity, or supply a mount and variable
+through an external overlay. Other `SWH_*` values are bound onto the container
+by name from the environment's service configuration after the render.
 
 ## Distribution and SBOM evidence
 
@@ -181,9 +209,11 @@ against core's `sbom.ValidateCoverage`.
 - [`cmd/image-sbom`](cmd/image-sbom/main.go) is a thin entry point to core's
   `CollectImageEvidence` and `WriteImageEvidenceIndex`. A release runs it
   against the digest [`gateway-image.json`](gateway-image.json) records and
-  attaches them as the `gateway-image-sbom-<version>` workflow artifact, before
-  the tags consumers resolve are created, so an image whose scan failed is never
-  pullable by the version it was built for.
+  saves them as the `gateway-image-sbom-<version>` workflow artifact before
+  the image tags are created, then attaches every CycloneDX document and the
+  index to the GitHub release. Release assets retain the evidence after workflow
+  artifacts expire; `attach-image-evidence` must finish green before release
+  verification is complete.
 - CI builds the image and checks the same contract against it (`image-sbom`), and
   runs the agent against it (`agent-runtime-e2e`).
 - `ValidationCapabilities.image_sbom` is **served but not advertised**: core
@@ -208,29 +238,48 @@ image is built.
 
 ### Releasing
 
-The digest is only known once the image is built, so the order is fixed, and
-`release.yml` refuses to tag a tree that skips a step:
+The coordinator performs the following first-release sequence. The manifest's
+seed is `0.0.1`; `codefly publish` increments it, so the **first release is
+`v0.0.2`** and the image publisher must receive **`0.0.2`**.
 
-1. Find the upcoming version with `codefly publish --dry-run`.
-2. Run the `publish-gateway-image` workflow with that version (no `v`). It
-   calls core's pinned `publish-service-image.yml`, pushes the image by digest,
-   carrying no tag, and prints `gateway-image.json`. The publisher uses
-   `persist-credentials: false` and refuses a commit outside the default branch's
-   history.
-3. Commit that file in a reviewed change. Until it is committed the lock records
-   no digest, and the agent, the deployment and the release all refuse to name an
-   image.
-4. `codefly publish` tags the release. The tag workflow tests, checks that the
-   tag matches `agent.codefly.yaml`, that the recorded digest was built for this
-   version, inventories it, and only then creates the `:<version>` and `:latest`
-   tags and the GitHub release carrying the agent.
+1. Merge the reviewed gateway PR after its CI is green.
+2. On clean, synced `main`, run `codefly publish --dry-run` and confirm
+   `0.0.1` → `0.0.2`.
+3. Dispatch `publish-gateway-image` on `main` with `version=0.0.2` (no `v`).
+   Core's pinned publisher pushes by digest and prints `gateway-image.json`.
+   It uses `persist-credentials: false` and refuses a commit outside the default
+   branch's history.
+4. Make the new `ghcr.io/codefly-dev/service-warehouse` package **public** in
+   GitHub package settings. Verify an anonymous pull by the returned digest
+   using a fresh Docker configuration with no registry login.
+5. Commit the returned lock in a reviewed PR. Let CI inventory both declared
+   platforms (`linux/amd64`, `linux/arm64`), then merge that PR.
+6. Run the full `codefly agent ci` on synced `main`, including its audit and
+   generated-service `codefly ci run`. After it has passed, enable the PR trigger
+   in `agent-ci.yml`.
+7. Confirm the repository's `GH_PAT` release secret is configured, and retain
+   source packager `codefly.dev/go:0.0.69` and the patched Go 1.27.2 toolchain.
+8. From clean, synced `main` with Docker available, run `codefly publish`.
+   Verify that the tag matches `agent.codefly.yaml`, the locked image's version
+   labels match `0.0.2`, image tags resolve to the locked digest, and the workflow
+   attaches the image SBOM documents and index alongside the agent archives.
+9. Verify the release and the production loader's archive resolution. Close
+   [#12](https://github.com/codefly-dev/service-warehouse/issues/12) only then,
+   with the release URL and the per-row answer below.
 
-The release call needs a `GH_PAT` secret in the repository (`secrets: inherit`).
+**Per-row error answer at this revision:** `RowError` contains `row_index` and
+free-form `string error`; it has **no permanent/retryable code**. Consumers cannot
+branch on retryability without parsing text. The separate API work in
+[#14](https://github.com/codefly-dev/service-warehouse/pull/14) must land before
+claiming otherwise. This agent PR references #12; it does not close it.
 
 The lock is parsed by core's `resources.ParseImageLock`: it must name
 `ghcr.io/codefly-dev/service-warehouse`, contain only `name` and `digest`, and
 use `sha256:` followed by 64 lowercase hex characters. An empty digest records
-an unpublished image and is refused by the agent and release.
+an unpublished image and is refused by the agent and release. CI permits the
+initial empty lock only with complete history, no `v*` tag, and no prior nonempty
+lock in fetched history. Clearing an established lock fails CI even before the
+first tag.
 
 [sbom]: https://github.com/codefly-dev/core/blob/v0.18.1/docs/sbom.md
 
@@ -244,6 +293,15 @@ go build ./...
 go vet ./...
 go test -race ./...      # unit tests (mem backend + bufconn server) and the agent's
 ```
+
+The release-gate regression tests use `git` and `jq` (also present in CI).
+
+The source packager is pinned to `codefly.dev/go:0.0.69`, whose image recipes use
+immutable digests. `go.mod` and CI require Go 1.27.2; the gateway Dockerfile pins
+the Go 1.27.2 image index and sets `GOTOOLCHAIN=go1.27.2`. For local conformance,
+run `GOTOOLCHAIN=go1.27.2 codefly agent ci` so host toolchain selection is explicit.
+Before the first image lock, the agent-binary audit can pass but full generated
+service conformance still fails closed on the unpublished image.
 
 The agent's end-to-end tests need Docker and are behind the `e2e` tag; the SBOM
 one also needs `syft` on `PATH`:

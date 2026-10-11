@@ -5,14 +5,19 @@ on:
     branches: [main]
   pull_request:
 
+env:
+  GOTOOLCHAIN: go1.27.2
+
 jobs:
   build-test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version: "1.27.0"
+          go-version: "1.27.2"
           cache: true
       - run: go build ./...
       - run: go vet ./...
@@ -26,9 +31,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version: "1.27.0"
+          go-version: "1.27.2"
           cache: true
       - name: build gateway image
         run: docker build -t service-warehouse:e2e .
@@ -44,9 +51,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version: "1.27.0"
+          go-version: "1.27.2"
           cache: true
       - name: build gateway image
         run: docker build -t service-warehouse:e2e .
@@ -66,16 +75,16 @@ jobs:
       # digest gateway-image.json records — the image the agent actually names —
       # so a lock pointing at something that does not resolve, or that ships
       # fewer platforms than evidence has to cover, fails here rather than at
-      # release time. A lock with no digest is the tree before its first image
-      # was published: there is nothing to inventory, release.yml refuses to tag
-      # it, and the agent refuses to run it, so this is the one place it is
-      # allowed to pass, and says so.
+      # release time. The empty-lock exception ends at the first nonempty lock
+      # in fetched history or any v* tag. Full history is required above, so
+      # deleting an established digest cannot quietly skip the published scan.
       - name: inventory the published multi-architecture image
         run: |
           set -euo pipefail
           digest=$(jq -er '.digest' gateway-image.json)
           if [ -z "$digest" ]; then
-            echo "::notice::gateway-image.json records no digest: no gateway image has been published yet, so there is no published image to inventory"
+            bash .github/scripts/allow-unpublished-image.sh
+            echo "::notice::pre-release tree with no prior image lock: no published image to inventory"
             exit 0
           fi
           go run ./cmd/image-sbom -image "$(jq -er '.name + "@" + .digest' gateway-image.json)" -out sbom-published

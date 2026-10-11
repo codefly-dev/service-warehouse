@@ -36,7 +36,7 @@ const gatewayContainerPort = 9465
 // is run.
 const gatewayContainerUser = "65532:65532"
 
-// readinessBudget bounds the whole wait for the gateway in Start: one overall
+// readinessBudget bounds the whole wait for the gateway in Start and Test: one overall
 // deadline, so a slow attempt spends the budget instead of extending it.
 const readinessBudget = 60 * time.Second
 
@@ -276,10 +276,7 @@ func (s *Runtime) WaitForReady(ctx context.Context) error {
 	lastErr := "no attempt completed"
 poll:
 	for {
-		// Stop rather than start a probe the budget cannot see through: a
-		// truncated attempt reports this deadline and buries the cause the last
-		// full attempt established.
-		if deadline, ok := budget.Deadline(); ok && time.Until(deadline) < readinessProbeTimeout {
+		if budget.Err() != nil {
 			break
 		}
 
@@ -340,5 +337,11 @@ func (s *Runtime) Destroy(ctx context.Context, req *runtimev0.DestroyRequest) (*
 }
 
 func (s *Runtime) Test(ctx context.Context, req *runtimev0.TestRequest) (*runtimev0.TestResponse, error) {
-	return s.Runtime.TestResponse()
+	defer s.Wool.Catch()
+	// Conformance calls Init then Test without Start. Creating a container is
+	// not proof that it stayed alive or accepts the credential we handed out.
+	if err := s.WaitForReady(s.Wool.Inject(ctx)); err != nil {
+		return s.Runtime.TestError(err)
+	}
+	return s.Runtime.TestResponseWithResults(1, 1, 0, 0, 0, nil, nil)
 }
