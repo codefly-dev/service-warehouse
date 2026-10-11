@@ -167,9 +167,12 @@ rather than run `:latest`. The tag must match `version:` in `agent.codefly.yaml`
 or the job fails by design.
 
 Core is pinned in two places that move together: the `codefly-dev/core` version
-in `go.mod` and the commit SHA of core's reusable workflows in `release.yml`,
-`agent-ci.yml` and `publish-gateway-image.yml` (never `@main`: `release.yml`
-passes `secrets: inherit`).
+in `go.mod` and the commit SHA of core's reusable workflows in `release.yml` and
+`agent-ci.yml` (never `@main`: `release.yml` passes `secrets: inherit`). The image
+publisher is an explicitly labelled stopgap pending
+[core#770](https://github.com/codefly-dev/core/issues/770), the core 0.18.2 composite
+action: its job must stay in this repository so GHCR accepts its own job token.
+Do not restore the reusable publisher call; README owns the transition procedure.
 
 ## Where the depth is
 

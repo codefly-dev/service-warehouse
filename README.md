@@ -238,6 +238,16 @@ image is built.
 
 ### Releasing
 
+**Publisher stopgap pending [core#770](https://github.com/codefly-dev/core/issues/770):**
+GHCR checks the workflow's defining repository. Core's reusable publisher was
+denied `installation not allowed to Write organization package` when publishing
+a service package. `publish-gateway-image.yml` therefore defines the job here,
+logs in with its own `GITHUB_TOKEN` and `packages: write`, refuses unmerged
+commits before login, checks out with `persist-credentials: false`, and pushes
+by digest with no tags. Replace these local publishing steps with core 0.18.2's
+composite action once core#770 is available and adopted; keep the job in this
+repository. The other core integrations remain pinned to v0.18.1.
+
 The coordinator performs the following first-release sequence. The manifest's
 seed is `0.0.1`; `codefly publish` increments it, so the **first release is
 `v0.0.2`** and the image publisher must receive **`0.0.2`**.
@@ -246,9 +256,10 @@ seed is `0.0.1`; `codefly publish` increments it, so the **first release is
 2. On clean, synced `main`, run `codefly publish --dry-run` and confirm
    `0.0.1` → `0.0.2`.
 3. Dispatch `publish-gateway-image` on `main` with `version=0.0.2` (no `v`).
-   Core's pinned publisher pushes by digest and prints `gateway-image.json`.
-   It uses `persist-credentials: false` and refuses a commit outside the default
-   branch's history.
+   The in-repository publisher pushes by digest and records `gateway-image.json`
+   in the `gateway-image-lock-0.0.2` artifact and run summary. It uses
+   `persist-credentials: false` and refuses a commit outside the default branch's
+   history.
 4. Make the new `ghcr.io/codefly-dev/service-warehouse` package **public** in
    GitHub package settings. Verify an anonymous pull by the returned digest
    using a fresh Docker configuration with no registry login.

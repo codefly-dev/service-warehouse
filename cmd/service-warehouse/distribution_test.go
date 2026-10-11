@@ -135,7 +135,7 @@ func contentSignal(path, rel string) (string, error) {
 // to be re-checked against it.
 var shippedImage = []string{
 	".github/workflows/ci.yml: workflow runs docker build",
-	".github/workflows/publish-gateway-image.yml: workflow runs codefly-dev/core/.github/workflows/publish-service-image.yml@",
+	".github/workflows/publish-gateway-image.yml: workflow runs docker/build-push-action",
 	".github/workflows/release.yml: workflow runs docker build",
 	"Dockerfile: container image build definition",
 	"agent.codefly.yaml: Codefly agent manifest, whose Builder ships image build recipes",

@@ -130,8 +130,8 @@ func TestGatewayImageNameIsThisRepository(t *testing.T) {
 	require.Contains(t, string(lock), `"name": "ghcr.io/`+repository+`"`)
 
 	require.Contains(t, workflowBody(t, "release.yml"), "IMAGE: ghcr.io/${{ github.repository }}")
-	// The shared publisher derives the image name from the caller repository.
-	require.NotContains(t, workflowBody(t, "publish-gateway-image.yml"), "image-name:")
+	// The in-repository publisher derives the image name from this repository.
+	require.Contains(t, workflowBody(t, "publish-gateway-image.yml"), "REPOSITORY: ${{ github.repository }}")
 }
 
 // The container port is stated once in the agent and handed to the gateway as

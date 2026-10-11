@@ -244,26 +244,30 @@ func expectedFromReleasePipeline(t *testing.T, reference string) []*builderv0.Im
 	return expected
 }
 
-// publishedPlatforms reads the explicit inputs supplied to core's publisher.
+// publishedPlatforms reads the actual build step in this repository's publisher.
 func publishedPlatforms(t *testing.T) []string {
 	t.Helper()
 	var workflow struct {
 		Jobs map[string]struct {
-			Uses string `yaml:"uses"`
-			With struct {
-				Platforms string `yaml:"platforms"`
-			} `yaml:"with"`
+			Steps []struct {
+				Uses string `yaml:"uses"`
+				With struct {
+					Platforms string `yaml:"platforms"`
+				} `yaml:"with"`
+			} `yaml:"steps"`
 		} `yaml:"jobs"`
 	}
 	require.NoError(t, yaml.Unmarshal([]byte(workflowBody(t, "publish-gateway-image.yml")), &workflow))
 	var published []string
 	for _, job := range workflow.Jobs {
-		if !strings.HasPrefix(job.Uses, "codefly-dev/core/.github/workflows/publish-service-image.yml@") {
-			continue
-		}
-		for _, platform := range strings.Split(job.With.Platforms, ",") {
-			if platform = strings.TrimSpace(platform); platform != "" {
-				published = append(published, platform)
+		for _, step := range job.Steps {
+			if !strings.HasPrefix(step.Uses, "docker/build-push-action@") {
+				continue
+			}
+			for _, platform := range strings.Split(step.With.Platforms, ",") {
+				if platform = strings.TrimSpace(platform); platform != "" {
+					published = append(published, platform)
+				}
 			}
 		}
 	}
