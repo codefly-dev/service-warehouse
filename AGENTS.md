@@ -115,11 +115,10 @@ SWH_GATEWAY_IMAGE=service-warehouse:e2e go test -v -tags e2e -count=1 -run TestI
 output for `--- PASS`, never `ok` alone.
 
 `codefly agent ci` is the full agent conformance gate. Its workflow
-(`agent-ci.yml`) is `workflow_dispatch` only until a run of it has been seen
-green here. Run locally from the repo root, it needs a CLI whose go
-source-packager carries Go 1.27: with one that carries 1.26.4 the manifest and
-source stages pass and the build stage fails on `go.mod requires go >= 1.27.0`,
-which is the CLI's gap, not this repo's.
+(`agent-ci.yml`) is `workflow_dispatch` only until a full run has been seen green
+here. Run it from the repo root; packaging needs Docker and access to the source
+packager's toolchain downloads. `codefly ci run` instead operates on a consuming
+workspace: this agent repository has no workspace manifest.
 
 Run the server locally against the zero-dependency backend — it needs no
 database, no warehouse credential, and no network. It still refuses an

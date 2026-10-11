@@ -2,15 +2,10 @@
 # and generated-service conformance gates against this agent, through the shared
 # reusable workflow every codefly service agent uses.
 #
-# Manual (workflow_dispatch) until a run of it has been seen green on this
-# repository. service-object-storage parks the same workflow because the CLI's
-# pinned go source-packager predated Go 1.27, and the release/build stage failed
-# with `go.mod requires go >= 1.27.0 (GOTOOLCHAIN=local)`
-# (codefly-dev/cli#499, since closed). Run locally with a CLI whose packager
-# still carries Go 1.26.4, `codefly agent ci` passes its manifest and source
-# stages here and fails that same build stage; the CLI release named below has
-# not been run against this repository. Switch the trigger to `pull_request` once the first
-# dispatch passes.
+# Manual until a full run has been seen green on this repository. Packaging
+# needs Docker and source-packager/toolchain downloads; source validation alone
+# does not prove the release and generated-service stages. Switch to
+# pull_request once the first full run passes.
 name: agent-ci
 
 on:

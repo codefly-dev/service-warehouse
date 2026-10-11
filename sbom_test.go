@@ -44,7 +44,9 @@ func newSBOMBuilder(t *testing.T) *Builder {
 }
 
 func TestImageSubjectsCoverEveryPublishedPlatform(t *testing.T) {
-	subjects, err := sbom.ImageSubjects(context.Background(), sbom.PublishedImage{Service: testService, Role: gatewayimage.Role, Reference: pinnedReference, Platforms: gatewayimage.Platforms}, false)
+	withPublishedLock(t)
+	t.Setenv(gatewayImageOverrideEnv, "")
+	subjects, err := newSBOMBuilder(t).imageSubjects(context.Background())
 	require.NoError(t, err)
 
 	require.Len(t, subjects, len(gatewayimage.Platforms), "one subject per shipped platform")
