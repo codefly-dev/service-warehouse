@@ -19,11 +19,17 @@ const repoRoot = "../.."
 // names it.
 var workflowDir = filepath.Join(".github", "workflows")
 
-// imageBuildCommands emit an image when a workflow runs them.
+// imageBuildCommands emit an image when a workflow runs them. The last two are
+// core's shared publisher: the composite action a workflow calls as a step,
+// which is what this repository uses, and the reusable workflow it replaced.
+// That workflow is gone from core's default branch but still resolvable at the
+// commits before its removal, so a pin to one of those is a publish this gate
+// still has to see.
 var imageBuildCommands = []string{
 	"docker build",
 	"docker buildx",
 	"docker/build-push-action",
+	"codefly-dev/core/.github/actions/publish-service-image@",
 	"codefly-dev/core/.github/workflows/publish-service-image.yml@",
 }
 
@@ -135,7 +141,7 @@ func contentSignal(path, rel string) (string, error) {
 // to be re-checked against it.
 var shippedImage = []string{
 	".github/workflows/ci.yml: workflow runs docker build",
-	".github/workflows/publish-gateway-image.yml: workflow runs docker/build-push-action",
+	".github/workflows/publish-gateway-image.yml: workflow runs codefly-dev/core/.github/actions/publish-service-image@",
 	".github/workflows/release.yml: workflow runs docker build",
 	"Dockerfile: container image build definition",
 	"agent.codefly.yaml: Codefly agent manifest, whose Builder ships image build recipes",
@@ -238,7 +244,8 @@ func TestImageSignalsFindsAWorkflowImageBuild(t *testing.T) {
 	// the production list cannot fail when a command is dropped from it, which
 	// would silently narrow the gate.
 	commands := []string{"docker build", "docker buildx", "docker/build-push-action"}
-	if len(commands)+1 != len(imageBuildCommands) {
+	// The two shared-publisher signals have their own test below.
+	if len(commands)+2 != len(imageBuildCommands) {
 		t.Fatalf("imageBuildCommands is %v; update this test to match", imageBuildCommands)
 	}
 	for _, command := range commands {
@@ -252,12 +259,20 @@ func TestImageSignalsFindsAWorkflowImageBuild(t *testing.T) {
 	}
 }
 
-// Shared image publishers are image-producing paths even without local steps.
+// Shared image publishers are image-producing paths even without local steps:
+// the composite action called as a step, and the reusable workflow it replaced.
 func TestImageSignalsFindsTheCoreImagePublisher(t *testing.T) {
-	root := t.TempDir()
-	path := filepath.Join(".github", "workflows", "publish.yml")
-	write(t, root, path, "jobs:\n  publish:\n    uses: codefly-dev/core/.github/workflows/publish-service-image.yml@revision\n")
-	requireSignal(t, root, path)
+	for name, call := range map[string]string{
+		"composite action":  "jobs:\n  publish:\n    steps:\n      - uses: codefly-dev/core/.github/actions/publish-service-image@revision\n",
+		"reusable workflow": "jobs:\n  publish:\n    uses: codefly-dev/core/.github/workflows/publish-service-image.yml@revision\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			path := filepath.Join(".github", "workflows", "publish.yml")
+			write(t, root, path, call)
+			requireSignal(t, root, path)
+		})
+	}
 }
 
 // TestImageSignalsFindsADeployedImage covers an image this repository deploys

@@ -210,7 +210,7 @@ func (s *Builder) Deploy(ctx context.Context, req *builderv0.DeploymentRequest) 
 
 // rejectAnonymousDeploymentConfiguration reserves this key for the template's
 // literal false. Reject its presence, regardless of value, group or delivery
-// mechanism: a reference's value cannot be known at render time. Core v0.18.1
+// mechanism: a reference's value cannot be known at render time. Core v0.18.3
 // exposes secret references but no ConfigMap-reference field; raw configuration
 // and environment-manager values cover its ConfigMap/Secret data paths.
 func (s *Builder) rejectAnonymousDeploymentConfiguration(req *builderv0.DeploymentRequest) error {
