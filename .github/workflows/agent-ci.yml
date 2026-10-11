@@ -2,13 +2,14 @@
 # and generated-service conformance gates against this agent, through the shared
 # reusable workflow every codefly service agent uses.
 #
-# Manual until a full run has been seen green on this repository. Packaging
-# needs Docker and source-packager/toolchain downloads; source validation alone
-# does not prove the release and generated-service stages. Switch to
-# pull_request once the first full run passes.
+# Runs on every pull request since the first full run went green on main
+# (run 38167325616, release v0.0.2). Packaging needs Docker and
+# source-packager/toolchain downloads; source validation alone does not prove
+# the release and generated-service stages, so this stays its own workflow.
 name: agent-ci
 
 on:
+  pull_request:
   workflow_dispatch:
 
 jobs:
