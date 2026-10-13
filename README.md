@@ -188,7 +188,7 @@ The key `SWH_ALLOW_ANONYMOUS` is reserved in deployments: any caller-supplied
 occurrence is refused, including secret references, templated/secret/plain
 configuration, raw ConfigMap data and environment overrides, even with an empty
 or `false` value. The template owns the single literal `false` entry. Core
-v0.18.3 exposes no ConfigMap-reference input; it cannot render a ConfigMap-key
+v0.19.4 exposes no ConfigMap-reference input; it cannot render a ConfigMap-key
 reference supplied through that API. A configured `SWH_CREDENTIALS_FILE` is also refused because nothing mounts that file: grant
 the dedicated ServiceAccount a workload identity, or supply a mount and variable
 through an external overlay. Other `SWH_*` values are bound onto the container
@@ -258,8 +258,10 @@ with this job's own `GITHUB_TOKEN`, builds the committed `Dockerfile` with the
 repository root as context, and pushes by digest with no tags. Before login or
 build it refuses an event other than `workflow_dispatch`, a commit not reachable
 from the remote's own default branch, a `HEAD` that is not the triggering commit,
-a tree with any modified, staged, untracked or ignored file, and local Git config
-carrying credentials — which is why the checkout uses `persist-credentials: false`
+a tree with any modified, staged, untracked or ignored file, local Git config
+carrying credentials, Git config-defined hooks or filter drivers, any path with a
+`filter` attribute, and submodules (this repository has no `.gitattributes` and
+no submodules) — which is why the checkout uses `persist-credentials: false`
 and full history, and why nothing but the cgo cross-build emulator runs ahead of
 it. `registry-token` is the one place this job's token goes.
 
@@ -324,8 +326,8 @@ initial empty lock only with complete history, no `v*` tag, and no prior nonempt
 lock in fetched history. Clearing an established lock fails CI even before the
 first tag.
 
-[sbom]: https://github.com/codefly-dev/core/blob/v0.18.3/docs/sbom.md
-[publisher]: https://github.com/codefly-dev/core/blob/v0.18.3/.github/actions/publish-service-image/action.yml
+[sbom]: https://github.com/codefly-dev/core/blob/v0.19.4/docs/sbom.md
+[publisher]: https://github.com/codefly-dev/core/blob/v0.19.4/.github/actions/publish-service-image/action.yml
 
 ## Develop
 
