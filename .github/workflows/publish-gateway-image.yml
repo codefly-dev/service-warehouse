@@ -46,7 +46,7 @@ jobs:
       # Git credentials, an unmerged commit — still runs before login and build.
       - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
 
-      - uses: codefly-dev/core/.github/actions/publish-service-image@8e6cff6c6a2c2d815c8bee788248aa9b7d1ec908 # v0.18.3
+      - uses: codefly-dev/core/.github/actions/publish-service-image@5b9dbf5d7f03dd048d7b741dc8b79ab2bc407ab3 # v0.19.4
         id: publish
         with:
           version: ${{ inputs.version }}
