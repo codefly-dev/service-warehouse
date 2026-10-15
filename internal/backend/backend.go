@@ -45,6 +45,10 @@ type Config struct {
 	MaxQueryBytes int64
 	// QueryTimeout bounds a single query; 0 means the backend default.
 	QueryTimeout time.Duration
+	// MaxArrowMessageBytes bounds the body of one Arrow IPC message a client
+	// sends (InsertRows); a larger one is refused as invalid before any of it is
+	// read. 0 means the default of internal/arrowipc, never no bound.
+	MaxArrowMessageBytes int64
 }
 
 // ColumnType is the portable logical type — the honest intersection across the
@@ -292,10 +296,37 @@ type UnloadOptions struct {
 	Options map[string]string
 }
 
-// RowError is a per-row rejection from a streaming insert.
+// RowRefusal is the portable reason a backend permanently refused one row of a
+// streaming insert. It tells a caller what to do next: retrying the same row
+// against the same table gets the same answer, unless the reason says the
+// table, not the row, is what disagrees. A failure that says nothing against the
+// row (a throttle, a quota, a timeout, a dead backend) is never a row refusal;
+// the insert fails with a serr code instead.
+type RowRefusal int
+
+const (
+	// RefusalUnspecified is a refusal the backend does not explain, or one no
+	// other reason fits. It is still a refusal of the row.
+	RefusalUnspecified RowRefusal = iota
+	// RefusalInvalidValue means a value cannot be stored in its column: the
+	// wrong type, out of range, malformed, or null in a required column.
+	RefusalInvalidValue
+	// RefusalRowTooLarge means the row alone exceeds what the backend accepts.
+	RefusalRowTooLarge
+	// RefusalSchemaMismatch means the row's columns disagree with the table's:
+	// a column the table lacks, or a required column the row does not carry. The
+	// table would have to change for the same row to be accepted.
+	RefusalSchemaMismatch
+)
+
+// RowError is a per-row rejection from a streaming insert. RowIndex counts rows
+// from 0 across every batch of the call, in the order they were read. Error is
+// a description the backend wrote itself, never a vendor's own text; callers
+// branch on Reason.
 type RowError struct {
 	RowIndex int64
 	Error    string
+	Reason   RowRefusal
 }
 
 // InsertResult reports a streaming insert outcome.

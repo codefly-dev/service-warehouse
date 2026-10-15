@@ -16,6 +16,7 @@ package warehousev0
 
 import (
 	context "context"
+
 	grpc "google.golang.org/grpc"
 	codes "google.golang.org/grpc/codes"
 	status "google.golang.org/grpc/status"
@@ -51,7 +52,8 @@ const (
 // Warehouse is the generic data plane. Errors are returned as gRPC status codes
 // normalized across backends: NOT_FOUND, ALREADY_EXISTS, FAILED_PRECONDITION
 // (conditional DDL), INVALID_ARGUMENT (bad SQL), UNIMPLEMENTED (unsupported),
-// PERMISSION_DENIED, RESOURCE_EXHAUSTED (quota/bytes-billed), INTERNAL.
+// PERMISSION_DENIED, RESOURCE_EXHAUSTED (quota/bytes-billed), DEADLINE_EXCEEDED
+// (the query or server time limit), INTERNAL.
 type WarehouseClient interface {
 	// Query plane.
 	Query(ctx context.Context, in *QueryRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[QueryResponse], error)
@@ -251,7 +253,8 @@ func (c *warehouseClient) Native(ctx context.Context, in *NativeRequest, opts ..
 // Warehouse is the generic data plane. Errors are returned as gRPC status codes
 // normalized across backends: NOT_FOUND, ALREADY_EXISTS, FAILED_PRECONDITION
 // (conditional DDL), INVALID_ARGUMENT (bad SQL), UNIMPLEMENTED (unsupported),
-// PERMISSION_DENIED, RESOURCE_EXHAUSTED (quota/bytes-billed), INTERNAL.
+// PERMISSION_DENIED, RESOURCE_EXHAUSTED (quota/bytes-billed), DEADLINE_EXCEEDED
+// (the query or server time limit), INTERNAL.
 type WarehouseServer interface {
 	// Query plane.
 	Query(*QueryRequest, grpc.ServerStreamingServer[QueryResponse]) error
