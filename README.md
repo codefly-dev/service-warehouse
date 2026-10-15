@@ -163,6 +163,14 @@ the batch's columns with the table's metadata, so no vendor text decides it; a
 table altered while the call runs can surface as `INVALID_VALUE`. An Arrow type
 BigQuery has no equivalent of (map, duration, dictionary) is `Unimplemented`.
 
+**Implementation decisions (2026-10-15).**
+
+| Decision | Evidence and outcome |
+|----------|----------------------|
+| Build or reuse | Searched this repository and the shared `codefly-dev/core` and `codefly-dev/sdk-go` implementations: the existing BigQuery backend in [#14](https://github.com/codefly-dev/service-warehouse/pull/14) is the warehouse implementation; the shared libraries supply caller authentication and agent/runtime support, with no other BigQuery backend. Retain and extend the existing backend and `internal/arrowipc`. Go's standard library has no BigQuery or Arrow implementation; reuse Google's `cloud.google.com/go/bigquery` client (its query, inserter and per-row error implementations and tests) and Apache Arrow's IPC implementation, with the portable contract and bounded framing owned here. |
+| Scope exception | On 2026-10-15 the user approved retaining #14's existing implementation, which already exceeds the 2,000 hand-written-line stop threshold in [#23](https://github.com/codefly-dev/service-warehouse/pull/23). This exception retains the documented catalog, DDL, query, job and streaming-insert behavior; it does not authorize additional features. |
+| Feature order | Finish and merge #14 first, then the DuckDB engine, then restricted `Scan`, then export the shared Arrow helpers. Open each dependent PR only after its base has merged. `Scan` is absent from this version's contract; the backend's query path uses REST results and creates query jobs. |
+
 ## Configuration (env)
 
 | Var | Default | Notes |
@@ -466,6 +474,13 @@ creates a scratch dataset of its own with a random name, works only inside it, a
 deletes it. `SWH_TEST_BIGQUERY_LOCATION` and `SWH_TEST_BIGQUERY_CREDENTIALS_FILE`
 are optional (Application Default Credentials otherwise). CI runs no BigQuery, so
 that test has not run in CI.
+
+The current live test proves streamed inserts are visible to `Query`, when run.
+It cannot prove visibility through the Storage Read API because `Scan` is a
+later feature. The `Scan` implementation must extend this live test to read a
+streamed row through a read session, accept `IN` and timestamp comparisons in
+the session's row restriction, and verify that those filters select the expected
+rows. A REST fake or a successful `Query` is not evidence for that requirement.
 
 `buf` is never run on the host. `codefly generate proto` runs it inside the
 versioned proto companion image (`ghcr.io/codefly-dev/proto`), so the plugin
