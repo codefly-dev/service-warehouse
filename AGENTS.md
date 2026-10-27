@@ -141,8 +141,8 @@ SWH_GATEWAY_IMAGE=service-warehouse:e2e go test -v -tags e2e -count=1 -run TestI
 output for `--- PASS`, never `ok` alone.
 
 `codefly agent ci` is the full agent conformance gate. Its workflow
-(`agent-ci.yml`) is `workflow_dispatch` only until a full run has been seen green
-here. Run `codefly agent ci` from the repo root with CLI
+(`agent-ci.yml`) runs on pull requests and can also be dispatched manually.
+Run `codefly agent ci` from the repo root with CLI
 0.1.185, also pinned in `agent-ci.yml`. The manifest
 pins source packager `codefly.dev/go:0.0.69`, whose image recipes use immutable
 digests. The gateway build pins the Go image by tag and image-index digest and keeps
