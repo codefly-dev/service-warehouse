@@ -128,6 +128,10 @@ as `codefly.dev/object-storage`. The agent is the repo-root `main` package
 declared by [`agent.codefly.yaml`](agent.codefly.yaml); it is released as a GitHub
 release asset a consumer pins by version. The gateway it runs is a container
 image, pinned by digest in [`gateway-image.json`](gateway-image.json).
+The current lock was rebuilt with Go 1.27.3 for release 0.0.4 by
+[publisher run 40574049417](https://github.com/codefly-dev/service-warehouse/actions/runs/40574049417),
+from merged source `e6aa5185187a2548919456c8b614e8807d6916b1`. Both gateway
+architectures are checked through the published-image CI scan before release.
 
 **What a consumer receives.** The configuration group `warehouse`, with
 `connection` (`grpc://host:port`), `endpoint` (`host:port`) and `token`, a
