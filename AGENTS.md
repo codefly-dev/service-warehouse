@@ -115,9 +115,10 @@ preferences; each is a rule an agent broke at real cost.
 
 Derived from [`.github/workflows/ci.yml`](.github/workflows/ci.yml): the
 `build-test` job is those three commands, so a green local run of all three is
-the definition of done. CI pins the Go version as a literal in that workflow
-(`go-version: "1.27.2"`) rather than reading `go.mod`, so bumping `go.mod`
-alone moves your toolchain and not CI's — change both.
+the definition of done. CI reads the Go version from `go.mod`
+(`go-version-file: go.mod`), as the release workflow does, so bumping the `go`
+directive moves your toolchain and CI's together; the gateway Dockerfile's Go
+base image is the one other place to move with it.
 
 ```sh
 go build ./...
@@ -141,11 +142,12 @@ output for `--- PASS`, never `ok` alone.
 
 `codefly agent ci` is the full agent conformance gate. Its workflow
 (`agent-ci.yml`) is `workflow_dispatch` only until a full run has been seen green
-here. Run `GOTOOLCHAIN=go1.27.2 codefly agent ci` from the repo root with CLI
+here. Run `codefly agent ci` from the repo root with CLI
 0.1.185, also pinned in `agent-ci.yml`. The manifest
 pins source packager `codefly.dev/go:0.0.69`, whose image recipes use immutable
-digests. The gateway build pins Go 1.27.2 by tag and image-index digest and fixes
-`GOTOOLCHAIN`; keep `go.mod`, CI and the image toolchain in sync. A fresh service
+digests. The gateway build pins the Go image by tag and image-index digest and keeps
+that image's `GOTOOLCHAIN=local`, so `go.mod` is the floor and the image must
+match it; move the two together, never pin a toolchain backwards. A fresh service
 declares `backend: mem`; Runtime.Test probes health and authenticated Capabilities
 even when Start was not called, and returns an explicit PASSED/FAILED run result.
 Before the first published lock, set `SWH_GATEWAY_IMAGE` to a local build to
