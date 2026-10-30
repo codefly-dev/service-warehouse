@@ -17,7 +17,7 @@ jobs:
     # Pinned to an immutable core commit SHA, not @main (see release.yml): core's
     # v0.19.4, the release go.mod requires. Bump the two together, which
     # TestCorePinsAreOneImmutableCommitMatchingGoMod holds.
-    uses: codefly-dev/core/.github/workflows/agent-ci.yml@5b9dbf5d7f03dd048d7b741dc8b79ab2bc407ab3 # v0.19.4
+    uses: codefly-dev/core/.github/workflows/agent-ci.yml@a06da5fccc7bc3fbf0e399d80eb41be00f2340fb # v0.19.8
     with:
       # The CLI release the gate runs with. agent.codefly.yaml selects the
       # source-packager version (0.0.69); go.mod selects Go 1.27.3.
