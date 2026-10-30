@@ -33,7 +33,7 @@ jobs:
       # Full history and the triggering commit, with no `ref`: the action proves
       # that commit is reachable from the remote's own default branch, and a
       # shallow clone or a caller-selected ref would decide that question for it.
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -44,9 +44,9 @@ jobs:
       # before the action, it runs no code from this repository and writes
       # nothing into the checkout, so the action's guard — a dirty tree, stored
       # Git credentials, an unmerged commit — still runs before login and build.
-      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
 
-      - uses: codefly-dev/core/.github/actions/publish-service-image@5b9dbf5d7f03dd048d7b741dc8b79ab2bc407ab3 # v0.19.4
+      - uses: codefly-dev/core/.github/actions/publish-service-image@a06da5fccc7bc3fbf0e399d80eb41be00f2340fb # v0.19.8
         id: publish
         with:
           version: ${{ inputs.version }}
